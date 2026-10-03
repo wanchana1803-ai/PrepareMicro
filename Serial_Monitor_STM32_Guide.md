@@ -99,7 +99,7 @@ int __io_putchar(int ch)
 3. คลิกแท็บ **`Debugger`**
 4. เลื่อนลงมาล่างสุด หาหัวข้อ **`Serial Wire Viewer (SWV)`**:
    - ติ๊กถูกที่ช่อง **`Enable`**
-   - ช่อง **Core Clock:** ใส่ความถี่ของชิป (ค่ามาตรฐาน Nucleo มักเป็น `16` MHz หรือตามที่ตั้งไว้ใน Clock Configuration)
+   - ช่อง **Core Clock:** ใส่ความถี่ของชิปคือ **`84`** MHz (ดูจากแท็บ Clock Configuration ช่อง HCLK)
 5. กด **`Apply`** แล้วกด **`Debug`**
 
 #### ขั้นที่ 2: เปิดหน้าต่าง SWV ITM Data Console

@@ -209,8 +209,9 @@ STM32F410RB มีตัวสร้างแรงดันสัญญาณ�
 ### การตั้งค่าใน CubeMX:
 - ไปที่หมวด **Timers** > เลือก Timer (เช่น `TIM1`)
 - Channel 1: เลือกเป็น **`PWM Generation CH1`** (ขา `PA8`)
-- ตั้งค่า **Prescaler (PSC)** และ **Counter Period (ARR)** ในแถบ Parameter Settings
-  - ตัวอย่าง: หากตั้ง **ARR = 999** ค่า Duty Cycle จะปรับได้ระหว่าง `0` ถึง `999`
+- ตั้งค่า **Prescaler (PSC)** และ **Counter Period (ARR)** ในแถบ Parameter Settings:
+  - บอร์ด STM32F410RB จาก Clock Tree วิ่งที่ **84 MHz**
+  - ตั้ง **`Prescaler (PSC) = 83`** และ **`Counter Period (ARR) = 999`** จะได้ความถี่ **1 kHz** พอดีเป๊ะ ไม่ต้องคำนวณซับซ้อน!
 
 ### 1) ประกาศตัวแปรใน `USER CODE BEGIN PV`:
 ```c
@@ -275,29 +276,30 @@ uint32_t last_time = 0; // ตัวแปรจับเวลา
 
 ---
 
-### 📐 สูตรการคำนวณเปลี่ยนความถี่ PWM (PWM Frequency Calculation)
+### 📐 สูตรการคำนวณเปลี่ยนความถี่ PWM (มาตรฐาน 84 MHz ของ STM32F410RB)
 
 ความถี่ของคลื่น PWM คำนวณจากสูตร:
 
 $$f_{\text{PWM}} = \frac{f_{\text{TIM\_CLK}}}{(\text{PSC} + 1) \times (\text{ARR} + 1)}$$
 
-* **$f_{\text{TIM\_CLK}}$:** สัญญาณนาฬิกาของ Timer (บอร์ด Nucleo ค่าเริ่มต้นคือ `16 MHz` หรือ `16,000,000 Hz`)
+* **$f_{\text{TIM\_CLK}}$:** สัญญาณนาฬิกาของ Timer ดูจากแท็บ Clock Configuration ช่อง **`APB2 timer clocks` = `84 MHz` (84,000,000 Hz)**
 * **$\text{PSC}$ (Prescaler):** ตัวหารความถี่นาฬิกา
-* **$\text{ARR}$ (Counter Period):** จำนวนขั้นการนับ (กำหนดความละเอียดของ Duty Cycle เช่น 999 หรือ 1000)
+* **$\text{ARR}$ (Counter Period):** จำนวนขั้นการนับ (กำหนดความละเอียดของ Duty Cycle)
 
 #### ขั้นตอนการคำนวณหาค่า PSC:
-$$\text{PSC} = \frac{f_{\text{TIM\_CLK}}}{f_{\text{PWM}} \times (\text{ARR} + 1)} - 1$$
+$$\text{PSC} = \frac{84,000,000}{f_{\text{PWM}} \times (\text{ARR} + 1)} - 1$$
 
-#### 3 ความถี่ยอดฮิตในข้อสอบ:
+#### 🌟 เทคนิคจำง่ายที่สุดสำหรับข้อสอบ (ใช้เลข 83 เป็นหลัก!):
 1. **1 kHz (1,000 Hz) - สำหรับหรี่ไฟ LED (ไม่กระพริบ):**
-   - ตั้ง $\text{ARR} = 999$ (หรือ $1000$)
-   - $\text{PSC} = \frac{16,000,000}{1,000 \times 1,000} - 1 = \mathbf{15}$
-2. **20 kHz (20,000 Hz) - สำหรับขับมอเตอร์ DC (ไร้เสียงหวีด):**
-   - ตั้ง $\text{ARR} = 799$
-   - $\text{PSC} = \frac{16,000,000}{20,000 \times 800} - 1 = \mathbf{0}$
-3. **50 Hz (คาบเวลา 20 ms) - สำหรับเซอร์โวมอเตอร์ (Servo SG90):**
-   - ตั้ง $\text{PSC} = 15$ (Timer เดินก้าวละ $1\,\mu\text{s}$)
+   - ตั้ง $\text{ARR} = 999$ (คือ 1,000 ขั้น)
+   - $\text{PSC} = \frac{84,000,000}{1,000 \times 1,000} - 1 = \mathbf{83}$
+2. **50 Hz (คาบเวลา 20 ms) - สำหรับเซอร์โวมอเตอร์ (Servo SG90):**
+   - ตั้ง $\text{PSC} = \mathbf{83}$ (ความเร็ว Timer เดินก้าวละ $1\,\mu\text{s}$)
    - $\text{ARR} = \frac{1,000,000}{50} - 1 = \mathbf{19999}$
+   *(สังเกต: ทั้ง LED และ Servo ใช้ **`PSC = 83`** เลขเดียวกันเลย จำง่ายมาก!)*
+3. **20 kHz (20,000 Hz) - สำหรับขับมอเตอร์ DC (ไร้เสียงหวีด):**
+   - ตั้ง $\text{ARR} = 1049$
+   - $\text{PSC} = \frac{84,000,000}{20,000 \times 1,050} - 1 = 4 - 1 = \mathbf{3}$
 
 ---
 
