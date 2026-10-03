@@ -1,0 +1,15 @@
+# Build artifacts
+Debug/
+Release/
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.bin
+*.hex
+
+# IDE files
+.metadata/
+.settings/

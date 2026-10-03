@@ -1,0 +1,321 @@
+# คู่มือสรุปคำสั่ง STM32 HAL Driver (STM32F410RB)
+**โปรแกรมที่ใช้:** STM32CubeMX & STM32CubeIDE  
+**หมวดหมู่ครอบคลุม:** Digital Input, Digital Output, Analog Input (ADC), Analog Output (DAC), PWM Output
+
+---
+
+## 📌 โครงสร้างและกฎการวางโค้ดใน `main.c`
+เวลาใช้ **STM32CubeMX** ร่วมกับ **STM32CubeIDE** ทุกครั้งที่มีการ Generate โค้ดใหม่ ตัวสร้างโค้ดจะทับไฟล์เดิม ดังนั้น **ต้องเขียนโค้ดไว้ระหว่างคู่ Comment เท่านั้น**:
+
+| ส่วนของ Comment | หน้าที่ / วัตถุประสงค์ |
+| :--- | :--- |
+| `/* USER CODE BEGIN Includes */` | สำหรับ `#include` ไลบรารีเพิ่มเติม |
+| `/* USER CODE BEGIN PV */` | ประกาศตัวแปร Global / Private Variables (เช่น เก็บค่า ADC, PWM) |
+| `/* USER CODE BEGIN 2 */` | โค้ดที่รัน **ครั้งเดียว** ก่อนเข้า Loop (เช่น สั่ง Start PWM, Start DAC) |
+| `/* USER CODE BEGIN WHILE */` / `/* USER CODE BEGIN 3 */` | โค้ดที่วนทำงานซ้ำเรื่อยๆ ใน `while (1)` (เช่น อ่านปุ่ม, อ่าน ADC, สั่งงาน) |
+
+---
+
+## 1. Digital Output (สั่งเปิด-ปิดขา Pin)
+
+### การตั้งค่าใน CubeMX:
+- คลิกเลือกขาที่ต้องการ (เช่น `PA5` บนบอร์ด Nucleo มักเป็น User LED) -> เลือกเป็น **`GPIO_Output`**
+
+### คำสั่งที่ใช้:
+```c
+// 1. สั่งจ่ายไฟ HIGH (ติด)
+HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+
+// 2. สั่งตัดไฟ LOW (ดับ)
+HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+
+// 3. สลับสถานะ (ถ้าติดให้ดับ, ถ้าดับให้ติด)
+HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+
+// 4. หน่วงเวลา (หน่วยเป็นมิลลิวินาที: ms)
+HAL_Delay(500); // รอ 500 ms
+```
+
+### จุดที่นำไปวางใน `main.c`:
+```c
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5); // สลับสถานะ LED
+    HAL_Delay(500);                        // หน่วงเวลา 0.5 วินาที
+  }
+  /* USER CODE END 3 */
+```
+
+---
+
+## 2. Digital Input (อ่านค่าปุ่มกด/สวิตช์)
+
+### การตั้งค่าใน CubeMX:
+- คลิกเลือกขาที่ต้องการ (เช่น `PC13` ปุ่ม User Button) -> เลือกเป็น **`GPIO_Input`**
+- ในหมวด **System Core** > **GPIO**: ตั้งค่า Pull-up หรือ Pull-down ให้ตรงกับวงจรภายนอก
+
+### คำสั่งพื้นฐานที่ใช้:
+```c
+// อ่านสถานะขา โดยจะคืนค่าเป็น GPIO_PIN_SET (1) หรือ GPIO_PIN_RESET (0)
+GPIO_PinState state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+```
+
+### แบบที่ 1: "กดติด - ปล่อยดับ" (พื้นฐาน)
+```c
+  /* USER CODE BEGIN 3 */
+  // ถ้ากดปุ่ม (ปุ่ม Active Low บนบอร์ด Nucleo กดแล้วเป็น 0 หรือ GPIO_PIN_RESET)
+  if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET)
+  {
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   // ให้ LED ติด
+  }
+  else
+  {
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // ให้ LED ดับ
+  }
+  /* USER CODE END 3 */
+```
+
+### แบบที่ 2: "กด 1 ครั้งสลับสถานะ (Toggle Switch)" + ตรวจจับขอบสัญญาณ (Edge Detection)
+> ⚠️ **ทำไมห้ามสั่ง `TogglePin` ใน `if` ตรงๆ?**  
+> เพราะไมโครวนลูปเร็วนับล้านรอบต่อวินาที กดค้างแค่เสี้ยววินาทีไฟจะ Toggle รัวๆ คุมไม่ได้  
+> **วิธีแก้:** ต้องตรวจจับเฉพาะจังหวะที่ "เพิ่งกด" (จากไม่กด 1 กลายเป็นกด 0) เท่านั้น!
+
+#### ประกาศตัวแปรใน `/* USER CODE BEGIN PV */`:
+```c
+/* USER CODE BEGIN PV */
+uint8_t last_btn_state = GPIO_PIN_SET; // ปุ่ม Active Low ไม่กดคือ SET (1)
+uint8_t press_count = 0;              // ตัวแปรนับจำนวนครั้งที่กด (ถ้าต้องการนับ)
+/* USER CODE END PV */
+```
+
+#### โค้ดใน `/* USER CODE BEGIN 3 */` (ใน while loop):
+```c
+  /* USER CODE BEGIN 3 */
+  uint8_t current_btn_state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+
+  // ตรวจจับจังหวะ "เพิ่งกด" (ตอนนี้เป็น RESET แต่รอบที่แล้วเป็น SET)
+  if (current_btn_state == GPIO_PIN_RESET && last_btn_state == GPIO_PIN_SET)
+  {
+      // 1. สลับสถานะไฟ LED (กดติด กดอีกทีดับ)
+      HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+
+      // 2. นับจำนวนครั้งที่กด (ถ้าโจทย์สั่งให้นับ)
+      press_count++;
+
+      // 3. หน่วงเวลาสั้นๆ 20ms เพื่อป้องกันหน้าสัมผัสกระดอน (Debounce)
+      HAL_Delay(20);
+  }
+
+  // จำสถานะปัจจุบันไว้เปรียบเทียบในรอบถัดไป
+  last_btn_state = current_btn_state;
+  /* USER CODE END 3 */
+```
+
+---
+
+## 3. Input Analog (อ่านค่า ADC)
+
+### การตั้งค่าใน CubeMX:
+- ไปที่หมวด **Analog** > **ADC1**
+- ติ๊กเลือกช่อง Channel ที่ต้องการใช้งาน เช่น `IN0` (ขา `PA0`)
+
+### 1) ประกาศตัวแปรใน `USER CODE BEGIN PV`:
+```c
+/* USER CODE BEGIN PV */
+uint16_t adc_val = 0;   // ค่าดิบ 12-bit (0 ถึง 4095)
+float voltage = 0.0f;   // ค่าแรงดันจริง (0.0 ถึง 3.3 V)
+uint32_t adc_prev_tick = 0;
+/* USER CODE END PV */
+```
+
+### 2) คำสั่งที่ใช้อ่านค่าแบบ Polling ใน `USER CODE BEGIN 3`:
+```c
+  /* USER CODE BEGIN 3 */
+  // แนะนำ: ใช้อ่านร่วมกับ HAL_GetTick() ทุก 100 ms เพื่อไม่ให้ค้าง
+  if (HAL_GetTick() - adc_prev_tick >= 100)
+  {
+      adc_prev_tick = HAL_GetTick();
+
+      // 1. สั่งเริ่มการอ่านค่า ADC
+      HAL_ADC_Start(&hadc1);
+
+      // 2. รอการแปลงสัญญาณเสร็จสิ้น (Timeout 10 ms)
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          // 3. ดึงค่าผลลัพธ์มาเก็บไว้ในตัวแปร (0 - 4095)
+          adc_val = HAL_ADC_GetValue(&hadc1);
+
+          // 4. (สูตรยอดฮิตข้อสอบ) แปลงค่าตัวเลขเป็นแรงดัน Volt จริง (0 - 3.3V)
+          voltage = ((float)adc_val * 3.3f) / 4095.0f;
+      }
+
+      // 5. สั่งหยุดการทำงานของ ADC
+      HAL_ADC_Stop(&hadc1);
+
+      // 6. ปริ้นท์ค่าดูผ่าน Serial Monitor หรือ SWV
+      printf("ADC: %4d | Volt: %.2f V\r\n", adc_val, voltage);
+  }
+  /* USER CODE END 3 */
+```
+
+### 💡 ทริคข้อสอบเรื่อง ADC:
+- **ความละเอียด (Resolution):** STM32F410 เป็น **12-bit** ค่าที่อ่านได้จะมีช่วงคือ `0` ถึง `4095` ($2^{12} - 1$)
+- **สูตรคำนวณแปลงเป็น Volt:**
+  $$\text{Voltage} = \frac{\text{ADC\_Value} \times 3.3}{4095}$$
+
+
+---
+
+## 4. Output Analog (ส่งสัญญาณแรงดันผ่าน DAC)
+
+STM32F410RB มีตัวสร้างแรงดันสัญญาณอนาล็อกจริง (DAC) ที่ขา **PA5** (DAC1 Channel 1)
+
+### การตั้งค่าใน CubeMX:
+- ไปที่หมวด **Analog** > **DAC**
+- ติ๊กเปิด **`OUT1 Configuration`**
+- Trigger: เลือกเป็น **`None`**
+
+### 1) สั่ง Start DAC ใน `USER CODE BEGIN 2`:
+```c
+  /* USER CODE BEGIN 2 */
+  // สั่งเปิดการทำงานของ DAC Channel 1 (เรียกครั้งเดียว)
+  HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
+  /* USER CODE END 2 */
+```
+
+### 2) ปรับแรงดันใน `USER CODE BEGIN 3`:
+ความละเอียด 12-bit จัดชิดขวา (`DAC_ALIGN_12B_R`) ช่วงค่าคือ `0` (0V) ถึง `4095` (~3.3V)
+```c
+  /* USER CODE BEGIN 3 */
+  // ตัวอย่าง: จ่ายแรงดันประมาณ 1.65V (กึ่งหนึ่งของ 3.3V)
+  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 2048);
+  HAL_Delay(1000);
+
+  // ปรับเป็น 3.3V เต็มสเกล
+  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 4095);
+  HAL_Delay(1000);
+  /* USER CODE END 3 */
+```
+
+---
+
+## 5. Output PWM (สัญญาณควบคุมพัลส์/ความเร็ว/หรี่ไฟ)
+
+### การตั้งค่าใน CubeMX:
+- ไปที่หมวด **Timers** > เลือก Timer (เช่น `TIM1`)
+- Channel 1: เลือกเป็น **`PWM Generation CH1`** (ขา `PA8`)
+- ตั้งค่า **Prescaler (PSC)** และ **Counter Period (ARR)** ในแถบ Parameter Settings
+  - ตัวอย่าง: หากตั้ง **ARR = 999** ค่า Duty Cycle จะปรับได้ระหว่าง `0` ถึง `999`
+
+### 1) ประกาศตัวแปรใน `USER CODE BEGIN PV`:
+```c
+/* USER CODE BEGIN PV */
+uint16_t adc_val = 0;   // ค่า ADC (0 - 4095)
+uint16_t pwm_val = 0;   // ค่าความสว่าง PWM (0 - 999)
+uint32_t last_time = 0; // ตัวแปรจับเวลา
+/* USER CODE END PV */
+```
+
+### 2) สั่ง Start PWM ใน `USER CODE BEGIN 2`:
+```c
+  /* USER CODE BEGIN 2 */
+  // สั่งให้ Timer เริ่มสร้างสัญญาณ PWM ออกที่ขา Channel นั้นๆ (เรียกครั้งเดียว)
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  /* USER CODE END 2 */
+```
+
+### 3) ตัวอย่างการปรับ Duty Cycle ใน `USER CODE BEGIN 3`:
+
+#### แบบ A: ปรับค่าคงที่ (Fixed Duty Cycle)
+```c
+  // สูตรคำสั่ง: __HAL_TIM_SET_COMPARE(&htimX, TIM_CHANNEL_X, duty_value);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 500);  // Duty Cycle 50% (500/1000)
+```
+
+#### แบบ B: ข้อสอบยอดฮิต! นำค่า ADC มาหรี่ไฟ LED (ADC to PWM Dimmer)
+```c
+  /* USER CODE BEGIN 3 */
+  if (HAL_GetTick() - last_time >= 50) // อัปเดตทุกๆ 50 ms (ลื่นไหล ไม่สะดุด)
+  {
+      last_time = HAL_GetTick();
+
+      // 1. อ่านค่า ADC จากตัวต้านทานปรับค่าได้
+      HAL_ADC_Start(&hadc1);
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          adc_val = HAL_ADC_GetValue(&hadc1); // อ่านค่า 0 - 4095
+      }
+      HAL_ADC_Stop(&hadc1);
+
+      // 2. สูตร Mapping: แปลงจากช่วง ADC (0 - 4095) เป็นช่วง PWM (0 - 999)
+      pwm_val = (uint32_t)adc_val * 999 / 4095;
+
+      // 3. ปรับ Duty Cycle จ่ายออกไปที่หลอดไฟ LED
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
+
+      // 4. ปริ้นท์ดูค่า
+      printf("ADC: %4d | PWM: %3d (%d%%)\r\n", 
+             adc_val, pwm_val, (pwm_val * 100) / 999);
+  }
+  /* USER CODE END 3 */
+```
+
+---
+
+## 6. การจับเวลาแบบไม่หยุดค้างการทำงาน (Non-blocking Delay ด้วย HAL_GetTick)
+
+> 💡 **ทำไมข้อสอบมักห้ามใช้ `HAL_Delay()`?**  
+> เพราะ `HAL_Delay(1000)` จะทำให้ซีพียูหยุดนิ่งทั้งระบบ 1 วินาทีเต็ม ระหว่างนั้นจะไม่สามารถรับส่งข้อมูล UART, ไม่สามารถตรวจจับการกดปุ่มได้ทันที หรือจอ OLED จะค้าง  
+> จึงต้องใช้ **`HAL_GetTick()`** (ทำงานเหมือน `millis()` ใน Arduino)
+
+### คอนเซปต์:
+`HAL_GetTick()` คืนค่าเป็นตัวเลขมิลลิวินาที (ms) ตั้งแต่เปิดเครื่อง โดยอัปเดตอัตโนมัติจาก SysTick ทุก 1 ms
+
+### 1) ประกาศตัวแปรเก็บเวลาใน `USER CODE BEGIN PV`:
+```c
+/* USER CODE BEGIN PV */
+uint32_t prev_tick = 0; // ตัวแปรเก็บเวลาครั้งก่อนหน้า
+/* USER CODE END PV */
+```
+
+### 2) โครงสร้างคำสั่งใน `USER CODE BEGIN 3` (ใน while loop):
+```c
+  /* USER CODE BEGIN 3 */
+  // ตรวจสอบว่าเวลาผ่านไปครบ 500 ms หรือยัง
+  if (HAL_GetTick() - prev_tick >= 500)
+  {
+      prev_tick = HAL_GetTick(); // อัปเดตเวลาล่าสุด
+      
+      // คำสั่งที่ต้องการให้ทำงานทุกๆ 500 ms (เช่น ไฟกระพริบ หรือ อ่าน ADC)
+      HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+  }
+
+  // --- โค้ดส่วนอื่นยังคงทำงานได้ทันที โดยไม่ต้องรอ 500 ms! ---
+  // ตัวอย่างเช่น การตรวจจับปุ่มกดจะตอบสนองได้ทันที ไม่หน่วง
+  if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET)
+  {
+      // สั่งงานทันทีเมื่อกดปุ่ม
+  }
+  /* USER CODE END 3 */
+```
+
+---
+
+## 📊 ตารางสรุป Cheat Sheet รวดเร็วก่อนสอบ
+
+| ฟังก์ชัน | ตัวแปร/คำสั่งหลัก | วางที่ `main.c` |
+| :--- | :--- | :--- |
+| **Digital Out** | `HAL_GPIO_WritePin(GPIOx, PIN, SET/RESET);`<br>`HAL_GPIO_TogglePin(GPIOx, PIN);` | `USER CODE BEGIN 3` |
+| **Digital In (พื้นฐาน)** | `HAL_GPIO_ReadPin(GPIOx, PIN) == GPIO_PIN_SET` | `USER CODE BEGIN 3` |
+| **Button Toggle (Edge)** | `if (curr == RESET && last == SET) { Toggle(); count++; Delay(20); } last = curr;` | ตัวแปร: `USER CODE BEGIN PV`<br>ตรวจจับ: `USER CODE BEGIN 3` |
+| **Analog In (ADC)** | `HAL_ADC_Start(&hadc1);`<br>`HAL_ADC_PollForConversion(&hadc1, timeout);`<br>`val = HAL_ADC_GetValue(&hadc1);`<br>`HAL_ADC_Stop(&hadc1);` | ตัวแปร: `USER CODE BEGIN PV`<br>อ่านค่า: `USER CODE BEGIN 3` |
+| **Analog Out (DAC)**| `HAL_DAC_Start(&hdac, DAC_CHANNEL_1);`<br>`HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, val);` | Start: `USER CODE BEGIN 2`<br>Set: `USER CODE BEGIN 3` |
+| **Output PWM** | `HAL_TIM_PWM_Start(&htimx, TIM_CHANNEL_x);`<br>`__HAL_TIM_SET_COMPARE(&htimx, TIM_CHANNEL_x, duty);` | Start: `USER CODE BEGIN 2`<br>Set: `USER CODE BEGIN 3` |
+| **Non-blocking Timer** | `if (HAL_GetTick() - prev_tick >= INTERVAL) { prev_tick = HAL_GetTick(); ... }` | ตัวแปร: `USER CODE BEGIN PV`<br>เงื่อนไข: `USER CODE BEGIN 3` |
+
+
