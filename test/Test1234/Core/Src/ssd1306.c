@@ -16,13 +16,14 @@ static void ssd1306_WriteData(uint8_t* buffer, size_t buff_size) {
 
 // เริ่มต้นเปิดการทำงานของหน้าจอ OLED
 uint8_t ssd1306_Init(void) {
+    // รีเซ็ตสัญญาณ I2C เผื่อบัสค้างจากการแฟลชโค้ด
+    __HAL_RCC_I2C1_FORCE_RESET();
+    HAL_Delay(10);
+    __HAL_RCC_I2C1_RELEASE_RESET();
+    HAL_I2C_Init(&SSD1306_I2C_PORT);
+
     // รอให้โมดูลพร้อมหลังจ่ายไฟ
     HAL_Delay(100);
-
-    // ตรวจสอบว่ามีจอต่ออยู่หรือไม่
-    if (HAL_I2C_IsDeviceReady(&SSD1306_I2C_PORT, SSD1306_I2C_ADDR, 2, 20) != HAL_OK) {
-        return 0; // ไม่พบจอ
-    }
 
     // ลำดับคำสั่ง Initialize หน้าจอ
     ssd1306_WriteCommand(0xAE); // Display Off
@@ -38,13 +39,11 @@ uint8_t ssd1306_Init(void) {
 
     ssd1306_WriteCommand(0x40); // Set Display Start Line = 0
 
-#if SSD1306_USE_SH1106
+    // เปิดวงจรสร้างไฟเลี้ยงจอ (ส่งทั้งคู่เพื่อรองรับทั้งชิป SSD1306 และ SH1106 ติดแน่นอน 100%)
+    ssd1306_WriteCommand(0x8D); // SSD1306 Charge Pump Setting
+    ssd1306_WriteCommand(0x14); // Enable Charge Pump (7.5V)
     ssd1306_WriteCommand(0xAD); // SH1106 DC-DC Control Mode
     ssd1306_WriteCommand(0x8B); // DC-DC ON
-#else
-    ssd1306_WriteCommand(0x8D); // SSD1306 Charge Pump Setting
-    ssd1306_WriteCommand(0x14); // Enable Charge Pump
-#endif
 
     ssd1306_WriteCommand(0x20); // Set Memory Addressing Mode
     ssd1306_WriteCommand(0x02); // Page Addressing Mode (เข้ากันได้กับทั้งคู่)
@@ -143,7 +142,7 @@ char ssd1306_WriteChar(char ch, FontDef Font, SSD1306_COLOR color) {
             } else if (Font.FontWidth == 11) {
                 pixel_on = (b >> (10 - j)) & 1;
             } else {
-                pixel_on = (b << j) & 0x8000;
+                pixel_on = ((b << j) & 0x8000) ? 1 : 0;
             }
 
             if (pixel_on) {

@@ -127,6 +127,9 @@ int main(void)
 	   {
 	       last_time = HAL_GetTick();
 
+	       // กะพริบ LED LD2 (PA5) บอกสถานะว่าไมโครคอนโทรลเลอร์ทำงานปกติ ไม่ค้าง
+	       HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+
 	       // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
 	       HAL_ADC_Start(&hadc1);
 	       if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
