@@ -17,27 +17,44 @@
       #include <stdio.h>
 
    ข) สั่งเปิดจอใน /* USER CODE BEGIN 2 */
-      ssd1306_Init();
+      ssd1306_Init(); // เปิดจอ (มีระบบ Auto-Reset บัส และเปิด Charge Pump ให้ทั้ง 0.96" และ 1.3")
 
    ค) เขียนข้อความและอัปเดตหน้าจอใน /* USER CODE BEGIN 3 */ (ใน while loop)
-      ssd1306_Fill(Black);                               // ล้างหน้าจอ
-      ssd1306_SetCursor(0, 0);                           // กำหนดตำแหน่งเริ่มเขียน (X=0, Y=0)
-      ssd1306_WriteString("MICRO TEST", Font_7x10, White);// เขียนข้อความ
-      
-      // ตัวอย่างแสดงตัวแปร:
-      // char buf[20];
-      // sprintf(buf, "ADC: %d", adc_val);
-      // ssd1306_SetCursor(0, 15);
-      // ssd1306_WriteString(buf, Font_11x18, White);
+      char str[20];
+      ssd1306_Fill(Black); // ล้างหน้าจอเดิม
 
-      ssd1306_UpdateScreen();                            // สั่งแสดงผลขึ้นจอจริง (ห้ามลืม!)
-      HAL_Delay(200);
+      // บรรทัดที่ 1: หัวข้อ
+      ssd1306_SetCursor(0, 0);
+      ssd1306_WriteString("STM32 CONTROLLER", Font_7x10, White);
+
+      // บรรทัดที่ 2: ค่าตัวเลขใหญ่ (Font 11x18)
+      // ⚠️ จุดสำคัญ: ให้ cast ตัวเลขทศนิยมเป็น (int) เสมอ เช่น (int)freq
+      sprintf(str, "%4d Hz", (int)freq_target);
+      ssd1306_SetCursor(0, 16);
+      ssd1306_WriteString(str, Font_11x18, White);
+
+      // บรรทัดที่ 3: ค่าเซนเซอร์ / ADC
+      sprintf(str, "ADC: %4d", adc_val);
+      ssd1306_SetCursor(0, 42);
+      ssd1306_WriteString(str, Font_7x10, White);
+
+      // บรรทัดที่ 4: สถานะ Duty Cycle ชิดขวา
+      ssd1306_SetCursor(70, 42);
+      ssd1306_WriteString("D: 50%", Font_7x10, White);
+
+      // สั่งส่งภาพขึ้นจอจริง (ห้ามลืมเด็ดขาด!)
+      ssd1306_UpdateScreen();
 
 --------------------------------------------------------------------------------
 💡 หมายเหตุเรื่องขนาดจอ (1.3" vs 0.96"):
 ไฟล์ ssd1306.h ถูกตั้งค่าไว้สำหรับจอ 1.3 นิ้ว (SH1106) เป็นค่าเริ่มต้นแล้ว:
    #define SSD1306_USE_SH1106  1
 
-หากโจทย์ให้เปลี่ยนไปใช้จอ 0.96 นิ้ว (SSD1306) ให้แก้ใน 'ssd1306.h' เป็น:
+หากโจทย์ให้เปลี่ยนไปใช้จอ 0.96 นิ้ว (SSD1306) ให้แก้ใน 'ssd1306.h' บรรทัดที่ 15 เป็น:
    #define SSD1306_USE_SH1106  0
+
+--------------------------------------------------------------------------------
+🚨 แก้ปัญหาหน้างาน (Troubleshooting):
+1. ถ้าจอมืดสนิทหลังแฟลช: ให้ถอดสาย USB ออกแล้วเสียบใหม่ (Cold Reboot)
+2. ถ้าเปิดโหมด Debug: ให้กดปุ่ม Resume (F8) เพื่อให้โปรแกรมวิ่ง
 ================================================================================
