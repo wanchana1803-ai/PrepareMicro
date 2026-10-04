@@ -142,11 +142,14 @@ class STM32_GUI:
         slider_box = ttk.Frame(frame_ctrl)
         slider_box.pack(fill="x", pady=(10, 5))
 
-        ttk.Label(slider_box, text="PWM Duty Cycle (0 - 1000):").pack(anchor="w", padx=5)
-        self.slider_pwm = tk.Scale(slider_box, from_=0, to=1000, orient="horizontal",
-                                   resolution=10, showvalue=True, command=self.on_slider_change)
-        self.slider_pwm.set(500) # ค่าเริ่มต้น 50%
+        ttk.Label(slider_box, text="Virtual ADC Slider (0 - 4095):").pack(anchor="w", padx=5)
+        self.slider_pwm = tk.Scale(slider_box, from_=0, to=4095, orient="horizontal",
+                                   resolution=1, showvalue=True, command=self.on_slider_change)
+        self.slider_pwm.set(2048) # ค่าเริ่มต้น 50%
         self.slider_pwm.pack(fill="x", padx=5, pady=2)
+        # ผูกอีเวนต์เมื่อปล่อยเมาส์ ให้ส่งค่าสุดท้ายชัวร์ 100% (ป้องกันเลขตกหล่น)
+        self.slider_pwm.bind("<ButtonRelease-1>", lambda e: self.send_slider_final())
+        self.last_slider_time = 0
 
         # 3.3 กล่องป้อนข้อความ (Entry Box)
         entry_box = ttk.Frame(frame_ctrl)
@@ -231,8 +234,8 @@ class STM32_GUI:
         """ ส่งข้อความ 1 คำสั่งไปยัง STM32 """
         if self.ser and self.ser.is_open:
             try:
-                # เติม \r\n หรือส่งตัวเดียวตามที่ STM32 ออกแบบไว้
-                msg = f"{cmd_str}\r\n".encode("utf-8")
+                # ส่งลงท้ายด้วย \n ตัวเดียว เพื่อไม่ให้เกิดปัญหา \r กับ \n ชนกันใน STM32
+                msg = f"{cmd_str}\n".encode("utf-8")
                 self.ser.write(msg)
                 self.log_message(f"[PC -> STM32]: {cmd_str}")
             except Exception as e:
@@ -249,10 +252,19 @@ class STM32_GUI:
             self.txt_entry.delete(0, tk.END)
 
     def on_slider_change(self, val):
-        """ เมื่อเลื่อน Slider ให้ส่งค่า PWM เช่น P500 """
-        # สามารถแปลงข้อความส่งตามโปรโตคอลที่ต้องการ เช่น "P500" หรือส่งตัวเลขตรงๆ
+        """ เมื่อเลื่อน Slider หน่วงเวลาไม่ให้ส่งข้อมูลรัวเกินไป (Rate limit 60ms) """
+        import time
+        now = time.time()
+        if now - self.last_slider_time >= 0.06:
+            self.last_slider_time = now
+            if self.ser and self.ser.is_open:
+                self.send_command(f"A{val}")
+
+    def send_slider_final(self):
+        """ เมื่อปล่อยเมาส์ ส่งค่าเป้าหมายสุดท้ายทันที การันตีถึง 4095 หรือ 0 แน่นอน 100% """
         if self.ser and self.ser.is_open:
-            self.send_command(f"P{val}")
+            val = self.slider_pwm.get()
+            self.send_command(f"A{val}")
 
     def read_serial_loop(self):
         """ ลูปอ่านข้อมูลอัตโนมัติจาก STM32 โดยไม่ทำให้ UI ค้าง """
