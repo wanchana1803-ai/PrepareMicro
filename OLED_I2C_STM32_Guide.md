@@ -206,6 +206,8 @@ char str_buf[25];
 /* USER CODE BEGIN 2 */
 HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // สั่งเริ่มสร้าง PWM
 __HAL_TIM_SET_AUTORELOAD(&htim1, PWM_ARR_FIXED); // ตั้ง ARR ให้ได้ 1,000 Hz
+__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1); // เปิด Preload ป้องกันคลื่นสะดุด/ยืดคาบตอนเปลี่ยน Duty
+htim1.Instance->CR1 |= TIM_CR1_ARPE;                // เปิด Auto-reload preload
 ssd1306_Init(); // เปิดจอ OLED
 /* USER CODE END 2 */
 

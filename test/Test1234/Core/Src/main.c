@@ -51,10 +51,13 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint16_t adc_val = 0;   // ค่า ADC (0 - 4095)
-uint16_t pwm_val = 0;   // ค่าความสว่าง PWM (0 - 999)
-uint32_t last_time = 0; // ตัวแปรจับเวลา
-float freq_target = 0.0f;
+uint16_t adc_val = 0;
+float duty_percent = 20.0f;
+uint16_t ccr_val = 200;
+uint32_t last_time = 0;
+char str_buf[25];
+
+#define PWM_ARR_FIXED  999 // กำหนดความถี่ 1,000 Hz คงที่ (PSC = 83)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -112,8 +115,11 @@ int main(void)
   MX_TIM1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // เริ่มสร้างสัญญาณ PWM
-  ssd1306_Init(); // สั่งเปิดและล้างหน้าจอ OLED
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // สั่งเริ่มสร้าง PWM
+  __HAL_TIM_SET_AUTORELOAD(&htim1, PWM_ARR_FIXED); // ตั้ง ARR ให้ได้ 1,000 Hz
+  __HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1); // เปิด Preload ป้องกันคลื่นสะดุด/ยืดคาบตอนเปลี่ยน Duty
+  htim1.Instance->CR1 |= TIM_CR1_ARPE;                // เปิด Auto-reload preload
+  ssd1306_Init(); // เปิดจอ OLED
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -126,9 +132,7 @@ int main(void)
 	  if (HAL_GetTick() - last_time >= 50)
 	   {
 	       last_time = HAL_GetTick();
-
-	       // กะพริบ LED LD2 (PA5) บอกสถานะว่าไมโครคอนโทรลเลอร์ทำงานปกติ ไม่ค้าง
-	       HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+	       HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5); // ไฟ LED กะพริบบอกสถานะบอร์ด
 
 	       // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
 	       HAL_ADC_Start(&hadc1);
@@ -138,39 +142,41 @@ int main(void)
 	       }
 	       HAL_ADC_Stop(&hadc1);
 
-	       // 2. แปลงค่า ADC (0 - 4095) ไปเป็น ความถี่เป้าหมาย (1000 - 2000 Hz)
-	       freq_target = 1000.0f + ((float)adc_val * 1000.0f / 4095.0f);
+	       // 2. คำนวณ Duty Cycle ในช่วง 20.0% ถึง 80.0%
+	       duty_percent = 20.0f + ((float)adc_val * 60.0f / 4095.0f);
 
-	       // 3. คำนวณค่า ARR และค่า Compare สำหรับ 50% Duty Cycle
-	       uint16_t arr_val = (uint16_t)(1000000.0f / freq_target) - 1;
-	       uint16_t ccr_val = (arr_val + 1) / 4; // ล็อก 50% ตลอดเวลา
+	       // 3. คำนวณค่า CCR (ช่วง 200 ถึง 800)
+	       ccr_val = (uint16_t)(((PWM_ARR_FIXED + 1) * duty_percent) / 100.0f);
 
-	       // 4. สั่งเปลี่ยนความถี่ (ARR) และ Duty 50% (CCR) แบบ Real-time!
-	       __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+	       // 4. สั่งเปลี่ยน Duty Cycle ทันที
 	       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
 
-	       // 5. ปริ้นท์ดูค่าความถี่
-	       printf("ADC: %4d | Freq: %4.1f Hz | ARR: %4d | Duty: 50.0%%\r\n",
-	              adc_val, freq_target, arr_val);
+	       // 5. แสดงผลบนจอ OLED
+	       ssd1306_Fill(Black);
 
-	       char str[20];
-	       	    ssd1306_Fill(Black); // 1. ล้างจอเดิม
-	       	    // บรรทัดที่ 1: หัวข้อ
-	       	    ssd1306_SetCursor(0, 0);
-	       	    ssd1306_WriteString("STM32 CONTROLLER", Font_7x10, White);
-	       	    // บรรทัดที่ 2: แสดงค่าความถี่ (Font 11x18 ตัวใหญ่ชัดเจน)
-	       	    sprintf(str, "%4d Hz", (int)freq_target);
-	       	    ssd1306_SetCursor(0, 16);
-	       	    ssd1306_WriteString(str, Font_11x18, White);
-	       	    // บรรทัดที่ 3: แสดงค่า ADC
-	       	    sprintf(str, "ADC: %4d", adc_val);
-	       	    ssd1306_SetCursor(0, 42);
-	       	    ssd1306_WriteString(str, Font_7x10, White);
-	       	    // บรรทัดที่ 4: แสดง Duty Cycle
-	       	    ssd1306_SetCursor(70, 42);
-	       	    ssd1306_WriteString("D: 50%", Font_7x10, White);
-	       	    // สั่งส่งภาพขึ้นจอจริง (ห้ามลืมคำสั่งนี้เด็ดขาด!)
-	       	    ssd1306_UpdateScreen();
+	       // บรรทัดที่ 1: หัวข้อ
+	       ssd1306_SetCursor(0, 0);
+	       ssd1306_WriteString("PWM CONTROLLER", Font_7x10, White);
+
+	       // บรรทัดที่ 2: ค่า Duty Cycle ตัวใหญ่ (Font 11x18)
+	       // เทคนิคแยกทศนิยม 1 ตำแหน่ง เพื่อเลี่ยงบั๊ก Float ใน CubeIDE
+	       int duty_int = (int)duty_percent;
+	       int duty_dec = (int)(duty_percent * 10.0f) % 10;
+	       sprintf(str_buf, "Duty: %2d.%1d %%", duty_int, duty_dec);
+	       ssd1306_SetCursor(0, 16);
+	       ssd1306_WriteString(str_buf, Font_11x18, White);
+
+	       // บรรทัดที่ 3: ค่า ADC และ CCR (Font 7x10)
+	       sprintf(str_buf, "ADC:%4d CCR:%3d", adc_val, ccr_val);
+	       ssd1306_SetCursor(0, 40);
+	       ssd1306_WriteString(str_buf, Font_7x10, White);
+
+	       // บรรทัดที่ 4: ความถี่คงที่ (Font 7x10)
+	       ssd1306_SetCursor(0, 52);
+	       ssd1306_WriteString("Freq: 1000 Hz (FIX)", Font_7x10, White);
+
+	       // 6. ส่งภาพขึ้นจอจริง
+	       ssd1306_UpdateScreen();
 	   }
 
   }
