@@ -197,17 +197,25 @@ ssd1306_Init(); // สั่งเปิดจอ (ในไลบรารี�
 /* USER CODE BEGIN PV */
 uint16_t adc_val = 0;   // ค่า ADC (0 - 4095)
 uint16_t pwm_val = 200; // ค่า Compare Register (200 - 800)
-uint32_t last_time = 0; // ตัวแปรจับเวลา Non-blocking
-char str_buf[25];
+uint32_t last_time = 0; // ตัวแปรจับเวลาอ่าน ADC (ทุก 50 ms)
+uint32_t OLED_time = 0; // ตัวแปรจับเวลาส่งขึ้นจอ OLED (ทุก 250 ms)
+char str[25];           // บัฟเฟอร์ข้อความจอ OLED
 /* USER CODE END PV */
 
 /* USER CODE BEGIN 2 */
-HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // สั่งเริ่มสร้าง PWM
-ssd1306_Init(); // เปิดจอ OLED
+// 1. เปิด Output Compare Preload ป้องกันพัลส์สะดุด/ยืดคาบเวลาตอนหมุนวอลลุ่ม
+__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1);
+
+// 2. สั่งเริ่มสร้างสัญญาณ PWM
+HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+
+// 3. เริ่มต้นเปิดจอ OLED
+ssd1306_Init();
 /* USER CODE END 2 */
 
 /* USER CODE BEGIN 3 */
-  if (HAL_GetTick() - last_time >= 50) // อัปเดตทุกๆ 50 ms (ลื่นไหล ไม่กระตุก)
+  // บล็อกที่ 1: อ่าน ADC และปรับ Duty Cycle ไวๆ ทุก 50 ms (ตอบสนองลื่นไหลทันที)
+  if (HAL_GetTick() - last_time >= 50)
   {
       last_time = HAL_GetTick();
 
@@ -228,9 +236,13 @@ ssd1306_Init(); // เปิดจอ OLED
       // 4. ปริ้นท์ดูค่าทาง Serial Monitor / SWV
       printf("ADC: %4d | PWM: %4d | Duty: %d.%d%%\r\n",
              adc_val, pwm_val, pwm_val / 10, pwm_val % 10);
+  }
 
-      // 5. แสดงผลบนจอ OLED
-      char str[20];
+  // บล็อกที่ 2: วาดภาพและส่งขึ้นจอ OLED ทุก 250 ms (แยกเวลาเพื่อไม่ให้ I2C รบกวนสัญญาณ PWM)
+  if (HAL_GetTick() - OLED_time >= 250)
+  {
+      OLED_time = HAL_GetTick();
+
       ssd1306_Fill(Black); // ล้างจอเดิม
 
       // บรรทัดที่ 1: หัวข้อ
@@ -244,7 +256,7 @@ ssd1306_Init(); // เปิดจอ OLED
 
       // บรรทัดที่ 3: แสดงค่า ADC และค่า PWM (CCR)
       sprintf(str, "ADC:%4d PWM:%3d", adc_val, pwm_val);
-      ssd1306_SetCursor(0, 40);
+      ssd1306_SetCursor(0, 38);
       ssd1306_WriteString(str, Font_7x10, White);
 
       // บรรทัดที่ 4: แสดงความถี่คงที่
@@ -256,6 +268,8 @@ ssd1306_Init(); // เปิดจอ OLED
   }
 /* USER CODE END 3 */
 ```
+
+> 💡 **เทคนิคเด็ด:** การแยกบล็อกอัปเดต OLED ออกมาที่ `250 ms` (4 ครั้งต่อวินาที) ช่วยลดภาระการส่งข้อมูล I2C ลงได้ถึง 80% ป้องกันไม่ให้สัญญาณสลับไปมาของ I2C ไปรบกวนการวัดสัญญาณ PWM บนสโคปได้อย่างดีเยี่ยม!
 
 ---
 
@@ -330,14 +344,38 @@ void scan_i2c(void)
 * **สาเหตุ:** เกิดจากการอ่านบิตในตารางฟอนต์ไม่ตรงกับการจัดเรียงข้อมูล
 * **สถานะปัจจุบัน:** ในไฟล์โฟลเดอร์ `OLED_Library/` (`ssd1306.c`, `fonts.c`) ได้รับการแก้ไขและทดสอบกับจอจริงเรียบร้อยแล้ว แสดงผลเต็มตัวอักษรคมชัดทุกขนาดฟอนต์
 
+### 4. ต่อจอ OLED ร่วมกับ PWM แล้วความถี่เพี้ยน หรือ Oscilloscope วัดได้ความถี่สูงมาก (เช่น 400 kHz หรือหลักร้อย kHz)
+* **สาเหตุที่ 1 (สัญญาณรบกวน 400 kHz จากบัส I2C):**  
+  เมื่อเรียก `ssd1306_UpdateScreen()` บัส I2C จะส่งข้อมูล 1024 ไบต์ที่ความถี่ 400 kHz อย่างต่อเนื่อง ขอบสัญญาณที่ชันจะเหนี่ยวนำสัญญาณรบกวน (High-Frequency Ringing) เข้าสู่กราวด์และขาข้างเคียง ทำให้ระบบวัดความถี่อัตโนมัติ (Measure Freq) ของ Oscilloscope นับทุกสไปค์เล็กๆ จนตัวเลขพุ่งไปหลายร้อย kHz
+* **สาเหตุที่ 2 (สับสนตำแหน่งขา PA8 กับ PB8):**  
+  ขา `PA8` คือ PWM 1 kHz ส่วนขา `PB8` คือ I2C SCL (400 kHz) หากจิ้มโพรบโดน PB8 จะวัดได้ 400 kHz พอดีเป๊ะ
+* **สาเหตุที่ 3 (PWM คาบยืดเพราะไม่เปิด OC Preload):**  
+  หากไม่เปิด Preload จังหวะที่หมุนวอลลุ่มเปลี่ยนค่า `CCR1` ตัวนับไทเมอร์อาจวิ่งเลยค่าเปรียบเทียบ ทำให้พัลส์ยืดออกเป็น 2 เท่า ความถี่ตกฮวบเหลือ 500 Hz สลับไปมา
+
+#### ✅ วิธีแก้ในโปรแกรม (Software Fixes):
+1. **ลดความเร็ว I2C ในโปรแกรมเป็น 100 kHz (Standard Mode):**  
+   ในฟังก์ชัน `MX_I2C1_Init(void)` ใน `main.c` เปลี่ยน:  
+   `hi2c1.Init.ClockSpeed = 100000;`  
+   *(ช่วยลดสัญญาณรบกวน EMI และ Ringing ลงอย่างเห็นได้ชัด)*
+2. **แยกเวลาอัปเดตจอ OLED เป็นทุกๆ 200 - 250 ms:**  
+   `if (HAL_GetTick() - OLED_time >= 250)` แทนการส่งทุก 50 ms เพื่อให้บัส I2C สงบนิ่ง 80-90% ของเวลา
+3. **เปิด Preload ก่อนเริ่ม PWM เสมอ:**  
+   `__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1);`
+
+#### 🛠️ วิธีแก้ที่ตัว Oscilloscope:
+1. **ห้ามกดปุ่ม AUTO (Autoset):** ให้ปรับลูกบิด Timebase แนวนอนด้วยมือมาที่ **`500 µs/div`** หรือ **`1 ms/div`**
+2. **เปิด Noise Filter:** ในเมนู Trigger ให้เปิด **Noise Reject = ON** หรือ **HF Reject = ON**
+3. **ล็อคขอบขาขึ้น:** ตั้ง Trigger Slope เป็น **Rising Edge (ขอบขาขึ้น ↗)** และตั้ง Trigger Level ที่ **1.5V**
+
 ---
 
 ## 📋 Checklist สรุปป้องกันการเสียคะแนนในห้องสอบ
-1. [ ] **เช็คสาย I2C:** `SCL` -> `PB8`, `SDA` -> `PB9` (ห้ามสลับขา)
-2. [ ] **ตั้งค่า CubeMX:** I2C1 Mode = I2C, Speed = Fast Mode (400 kHz)
+1. [ ] **เช็คสาย I2C:** `SCL` -> `PB8`, `SDA` -> `PB9` (ห้ามสลับขา และอย่าสับสนกับ `PA8`)
+2. [ ] **ตั้งค่า CubeMX:** I2C1 Mode = I2C, Speed = 100 kHz (Standard Mode เพื่อลดสัญญาณรบกวน) หรือ 400 kHz
 3. [ ] **นำไฟล์เข้าโปรเจกต์:** ก๊อป `.h` ไป `Core/Inc` และ `.c` ไป `Core/Src` แล้วกด **F5 (Refresh)**
 4. [ ] **อย่าลืมสั่ง Init:** ต้องมี `ssd1306_Init()` ใน `USER CODE BEGIN 2`
 5. [ ] **อย่าลืมสั่ง Update:** ทุกครั้งที่เขียนข้อความ ต้องตบท้ายด้วย `ssd1306_UpdateScreen()`
-6. [ ] **หน่วงเวลาอัปเดตจอ:** ให้ใช้ `HAL_GetTick() - last_time >= 50` เพื่อไม่ให้อัปเดตถี่เกินไปจน I2C ค้าง
-7. [ ] **แปลงตัวเลขด้วย sprintf:** ถ้าเป็นทศนิยมให้ cast เป็น `(int)` เช่น `sprintf(buf, "%d", (int)val);` เสมอ
+6. [ ] **แยกเวลาอัปเดต:** อ่าน ADC ทุก 50 ms (`last_time`), อัปเดตจอ OLED ทุก 250 ms (`OLED_time`)
+7. [ ] **เปิด OC Preload:** ใส่ `__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1);` ก่อนเริ่ม PWM
+8. [ ] **แปลงตัวเลขด้วย sprintf:** ถ้าเป็นทศนิยมให้ cast เป็น `(int)` เช่น `sprintf(buf, "%d", (int)val);` เสมอ
 
