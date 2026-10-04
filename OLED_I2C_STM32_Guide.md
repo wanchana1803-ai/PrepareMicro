@@ -177,6 +177,93 @@ ssd1306_Init(); // สั่งเปิดจอ (ในไลบรารี�
 
 ---
 
+### รูปแบบที่ 2: Fix ความถี่คงที่ แล้วปรับ Duty Cycle 20% - 80% ด้วยวอลลุ่ม
+
+โจทย์ยอดนิยมอีกรูปแบบ: **"กำหนดให้ความถี่คงที่ (เช่น 1,000 Hz) และใช้วอลลุ่มปรับ Duty Cycle ในช่วง 20% ถึง 80%"**
+
+#### สูตรการคำนวณ:
+1. **Fix ความถี่ (ที่ 84 MHz, PSC = 83 -> นับ 1 MHz):**
+   $$ARR = \frac{1,000,000}{1,000} - 1 = 999 \quad (\text{คาบเวลาทั้งหมด } = 1,000 \text{ สเต็ป})$$
+2. **แปลง ADC (0 - 4095) เป็น Duty Cycle (20.0% - 80.0%):**
+   $$\text{Duty (\%)} = 20.0 + \left( \frac{\text{ADC} \times (80.0 - 20.0)}{4095.0} \right) = 20.0 + \left( \frac{\text{ADC} \times 60.0}{4095.0} \right)$$
+3. **คำนวณค่า Compare (CCR):**
+   $$CCR = \frac{(ARR + 1) \times \text{Duty}}{100.0} = \frac{1000 \times \text{Duty}}{100} = 10 \times \text{Duty}$$
+   - เมื่อหมุนต่ำสุด ($ADC = 0$): $\text{Duty} = 20.0\% \implies CCR = 200$
+   - เมื่อหมุนสูงสุด ($ADC = 4095$): $\text{Duty} = 80.0\% \implies CCR = 800$
+
+#### โค้ดใน `main.c`:
+```c
+/* USER CODE BEGIN PV */
+uint16_t adc_val = 0;
+float duty_percent = 20.0f;
+uint16_t ccr_val = 200;
+uint32_t last_time = 0;
+char str_buf[25];
+
+#define PWM_ARR_FIXED  999 // กำหนดความถี่ 1,000 Hz คงที่ (PSC = 83)
+/* USER CODE END PV */
+
+/* USER CODE BEGIN 2 */
+HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // สั่งเริ่มสร้าง PWM
+__HAL_TIM_SET_AUTORELOAD(&htim1, PWM_ARR_FIXED); // ตั้ง ARR ให้ได้ 1,000 Hz
+ssd1306_Init(); // เปิดจอ OLED
+/* USER CODE END 2 */
+
+/* USER CODE BEGIN 3 */
+  if (HAL_GetTick() - last_time >= 50)
+  {
+      last_time = HAL_GetTick();
+      HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5); // ไฟ LED กะพริบบอกสถานะบอร์ด
+
+      // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
+      HAL_ADC_Start(&hadc1);
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          adc_val = HAL_ADC_GetValue(&hadc1);
+      }
+      HAL_ADC_Stop(&hadc1);
+
+      // 2. คำนวณ Duty Cycle ในช่วง 20.0% ถึง 80.0%
+      duty_percent = 20.0f + ((float)adc_val * 60.0f / 4095.0f);
+
+      // 3. คำนวณค่า CCR (ช่วง 200 ถึง 800)
+      ccr_val = (uint16_t)(((PWM_ARR_FIXED + 1) * duty_percent) / 100.0f);
+
+      // 4. สั่งเปลี่ยน Duty Cycle ทันที
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
+
+      // 5. แสดงผลบนจอ OLED
+      ssd1306_Fill(Black);
+
+      // บรรทัดที่ 1: หัวข้อ
+      ssd1306_SetCursor(0, 0);
+      ssd1306_WriteString("PWM CONTROLLER", Font_7x10, White);
+
+      // บรรทัดที่ 2: ค่า Duty Cycle ตัวใหญ่ (Font 11x18)
+      // เทคนิคแยกทศนิยม 1 ตำแหน่ง เพื่อเลี่ยงบั๊ก Float ใน CubeIDE
+      int duty_int = (int)duty_percent;
+      int duty_dec = (int)(duty_percent * 10.0f) % 10;
+      sprintf(str_buf, "Duty: %2d.%1d %%", duty_int, duty_dec);
+      ssd1306_SetCursor(0, 16);
+      ssd1306_WriteString(str_buf, Font_11x18, White);
+
+      // บรรทัดที่ 3: ค่า ADC และ CCR (Font 7x10)
+      sprintf(str_buf, "ADC:%4d CCR:%3d", adc_val, ccr_val);
+      ssd1306_SetCursor(0, 40);
+      ssd1306_WriteString(str_buf, Font_7x10, White);
+
+      // บรรทัดที่ 4: ความถี่คงที่ (Font 7x10)
+      ssd1306_SetCursor(0, 52);
+      ssd1306_WriteString("Freq: 1000 Hz (FIX)", Font_7x10, White);
+
+      // 6. ส่งภาพขึ้นจอจริง
+      ssd1306_UpdateScreen();
+  }
+/* USER CODE END 3 */
+```
+
+---
+
 ## ส่วนที่ 5: จุดแตกต่างสำคัญระหว่างจอ 1.3" (SH1106) กับ 0.96" (SSD1306)
 
 * **จอ 0.96 นิ้ว (SSD1306):** แรมของจอมีขนาด `128x64` ตรงกับขนาดการแสดงผล
