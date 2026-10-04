@@ -311,6 +311,41 @@ uint32_t last_time = 0; // ตัวแปรจับเวลา
   /* USER CODE END 3 */
 ```
 
+#### แบบ D: โจทย์จำกัดช่วงยอดฮิต! ปรับ Duty Cycle 20% ถึง 80% แบบ Fix ความถี่ 1,000 Hz
+> 💡 **สูตรคำนวณแบบจำนวนเต็ม (Integer Math) - ไม่ใช้ Float เร็ว เสถียร และนิ่งที่สุด:**  
+> - ที่ความถี่ 1,000 Hz (PSC = 83 @ 84MHz) $\to \text{ARR} = 999$ (คาบเต็ม 1000 สเต็ป)  
+> - ช่วง Duty 20% ถึง 80% คิดเป็นค่า Compare (CCR) ในช่วง **200 ถึง 800** (ระยะกว้าง = $800 - 200 = 600$)  
+> - สูตรแปลง ADC (0 - 4095) ตรงไปยังค่า Compare 200 - 800:  
+>   `pwm_val = 200 + (uint32_t)adc_val * 600 / 4095;`  
+> - ทศนิยมดึงด้วย: ส่วนจำนวนเต็ม = `pwm_val / 10`, ส่วนทศนิยม = `pwm_val % 10` (เช่น 554 $\to$ 55.4%)
+
+```c
+  /* USER CODE BEGIN 3 */
+  if (HAL_GetTick() - last_time >= 50)
+  {
+      last_time = HAL_GetTick();
+
+      // 1. อ่านค่า ADC จากตัวต้านทานปรับค่าได้
+      HAL_ADC_Start(&hadc1);
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          adc_val = HAL_ADC_GetValue(&hadc1); // อ่านค่า 0 - 4095
+      }
+      HAL_ADC_Stop(&hadc1);
+
+      // 2. คำนวณเป็น Duty Cycle 200 - 800 (20.0% - 80.0%) แบบจำนวนเต็ม
+      pwm_val = 200 + (uint32_t)adc_val * 600 / 4095;
+
+      // 3. สั่งจ่ายค่า Compare ให้หลอดไฟ LED / สโคป (ขา PA8)
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
+
+      // 4. ปริ้นท์ดูค่า
+      printf("ADC: %4d | PWM: %4d | Duty: %d.%d%%\r\n", 
+             adc_val, pwm_val, pwm_val / 10, pwm_val % 10);
+  }
+  /* USER CODE END 3 */
+```
+
 ---
 
 ### 🧠 สรุปความสัมพันธ์ PSC, ARR และ CCR (เข้าใจง่ายที่สุดสำหรับทำข้อสอบ)
