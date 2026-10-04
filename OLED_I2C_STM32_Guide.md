@@ -273,6 +273,205 @@ ssd1306_Init();
 
 ---
 
+### รูปแบบที่ 3: ปรับ Frequency (500 - 2,000 Hz) และ Duty Cycle (20% - 80%) พร้อมกันด้วยวอลลุ่มตัวเดียว
+
+โจทย์นี้คือเมื่อหมุนวอลลุ่ม ความถี่จะวิ่งตั้งแต่ **500 Hz ถึง 2,000 Hz** และค่า Duty Cycle จะวิ่งตั้งแต่ **20.0% ถึง 80.0%** ควบคู่กันไป
+
+#### ⚠️ กับดักสำคัญเรื่องคณิตศาสตร์ PWM:
+เมื่อ `ARR` เปลี่ยน (ความถี่เปลี่ยน) ค่า `CCR` **จะต้องถูกคำนวณใหม่ให้สัมพันธ์กับ `ARR` ก้อนใหม่เสมอ**:
+$$\mathbf{CCR} = \frac{(\mathbf{ARR} + 1) \times \text{Duty\_Permille}}{1000}$$
+*(หากไม่คูณสัมพันธ์กับ ARR ค่า Duty Cycle จริงบน Oscilloscope จะเพี้ยนทันที!)*
+
+#### โค้ดใน `main.c`:
+```c
+/* USER CODE BEGIN PV */
+uint16_t adc_val = 0;
+uint32_t freq_val = 500;       // ความถี่ 500 - 2,000 Hz
+uint32_t arr_val = 1999;       // ค่า ARR
+uint32_t duty_permille = 200;  // ค่า Duty 200 - 800 (คือ 20.0% - 80.0%)
+uint32_t pwm_val = 400;        // ค่า CCR สัมพันธ์กับ ARR
+uint32_t last_time = 0;        // อ่าน ADC (ทุก 50 ms)
+uint32_t OLED_time = 0;        // ส่งจอ OLED (ทุก 250 ms)
+char str[25];
+/* USER CODE END PV */
+
+/* USER CODE BEGIN 2 */
+__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1); // ป้องกันพัลส์กระตุก
+HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+ssd1306_Init();
+/* USER CODE END 2 */
+
+/* USER CODE BEGIN 3 */
+  // บล็อกที่ 1: อ่าน ADC และคำนวณทั้ง Frequency + Duty ไวๆ ทุก 50 ms
+  if (HAL_GetTick() - last_time >= 50)
+  {
+      last_time = HAL_GetTick();
+
+      // 1. อ่าน ADC (0 - 4095)
+      HAL_ADC_Start(&hadc1);
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          adc_val = HAL_ADC_GetValue(&hadc1);
+      }
+      HAL_ADC_Stop(&hadc1);
+
+      // 2. คำนวณความถี่เป้าหมาย (500 Hz ถึง 2,000 Hz)
+      freq_val = 500 + (uint32_t)adc_val * 1500 / 4095;
+
+      // 3. คำนวณค่า ARR (ที่ PSC = 83 -> นับก้าวละ 1 µs = 1,000,000 Hz)
+      arr_val = (1000000 / freq_val) - 1;
+
+      // 4. คำนวณ Duty Cycle เป้าหมาย (20.0% ถึง 80.0% -> ค่า 200 ถึง 800)
+      duty_permille = 200 + (uint32_t)adc_val * 600 / 4095;
+
+      // 5. คำนวณ Compare (CCR) ให้สัมพันธ์กับ ARR ก้อนใหม่เสมอ
+      pwm_val = ((arr_val + 1) * duty_permille) / 1000;
+
+      // 6. อัปเดตฮาร์ดแวร์ไทเมอร์ทั้งคู่พร้อมกัน
+      __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
+
+      // ปริ้นท์มอนิเตอร์ดูค่า
+      printf("ADC:%4d | F:%4lu Hz | D:%lu.%lu%% | ARR:%4lu | CCR:%4lu\r\n",
+             adc_val, freq_val, duty_permille / 10, duty_permille % 10, arr_val, pwm_val);
+  }
+
+  // บล็อกที่ 2: วาดภาพและส่งขึ้นจอ OLED ทุก 250 ms
+  if (HAL_GetTick() - OLED_time >= 250)
+  {
+      OLED_time = HAL_GetTick();
+
+      ssd1306_Fill(Black);
+
+      // บรรทัดที่ 1: หัวข้อ
+      ssd1306_SetCursor(0, 0);
+      ssd1306_WriteString("PWM DUAL CONTROL", Font_7x10, White);
+
+      // บรรทัดที่ 2: แสดงความถี่ (Font 11x18)
+      sprintf(str, "F:%4lu Hz", freq_val);
+      ssd1306_SetCursor(0, 16);
+      ssd1306_WriteString(str, Font_11x18, White);
+
+      // บรรทัดที่ 3: แสดง Duty Cycle (Font 11x18)
+      sprintf(str, "D:%2lu.%1lu%%", duty_permille / 10, duty_permille % 10);
+      ssd1306_SetCursor(0, 36);
+      ssd1306_WriteString(str, Font_11x18, White);
+
+      // บรรทัดที่ 4: ข้อมูลรีจิสเตอร์ ARR และ CCR
+      sprintf(str, "ARR:%3lu CCR:%3lu", arr_val, pwm_val);
+      ssd1306_SetCursor(0, 54);
+      ssd1306_WriteString(str, Font_7x10, White);
+
+      ssd1306_UpdateScreen();
+  }
+/* USER CODE END 3 */
+```
+
+---
+
+### รูปแบบที่ 4: วอลลุ่ม 1 ตัว + ปุ่มกด B1 สีฟ้า (PC13) สลับโหมดปรับ Frequency หรือ Duty
+
+ข้อสอบยอดฮิตตัดเกรด A: ใช้วอลลุ่มตัวเดียว แต่กดปุ่มสลับว่าจะปรับ **ความถี่** หรือปรับ **Duty Cycle**:
+* **MODE 0 (FREQ):** หมุนวอลลุ่มเปลี่ยนความถี่ (500 - 2,000 Hz) โดย Duty Cycle ไม่เปลี่ยน
+* **MODE 1 (DUTY):** หมุนวอลลุ่มเปลี่ยน Duty Cycle (10.0% - 90.0%) โดยความถี่ไม่เปลี่ยน
+
+#### โค้ดใน `main.c`:
+```c
+/* USER CODE BEGIN PV */
+uint16_t adc_val = 0;
+uint32_t freq_val = 1000;      // ความถี่เริ่มต้น 1,000 Hz
+uint32_t arr_val = 999;        // ARR เริ่มต้น 999
+uint32_t duty_permille = 500;  // Duty เริ่มต้น 50.0%
+uint32_t pwm_val = 500;
+
+uint8_t mode = 0;              // 0 = ปรับ Freq, 1 = ปรับ Duty
+uint8_t last_btn_state = GPIO_PIN_SET;
+
+uint32_t last_time = 0;
+uint32_t OLED_time = 0;
+char str[25];
+/* USER CODE END PV */
+
+/* USER CODE BEGIN 2 */
+__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1);
+HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+ssd1306_Init();
+/* USER CODE END 2 */
+
+/* USER CODE BEGIN 3 */
+  // 1. ตรวจจับปุ่มกด B1 (PC13) สลับโหมด (Active LOW)
+  uint8_t current_btn = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+  if (current_btn == GPIO_PIN_RESET && last_btn_state == GPIO_PIN_SET)
+  {
+      mode = !mode; // สลับ 0 <-> 1
+      HAL_Delay(50); // กันปุ่มเด้ง (Debounce)
+  }
+  last_btn_state = current_btn;
+
+  // 2. อ่าน ADC และปรับค่าตามโหมด ทุกๆ 50 ms
+  if (HAL_GetTick() - last_time >= 50)
+  {
+      last_time = HAL_GetTick();
+
+      HAL_ADC_Start(&hadc1);
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          adc_val = HAL_ADC_GetValue(&hadc1);
+      }
+      HAL_ADC_Stop(&hadc1);
+
+      if (mode == 0) // โหมดปรับความถี่ (500 Hz ถึง 2,000 Hz)
+      {
+          freq_val = 500 + (uint32_t)adc_val * 1500 / 4095;
+          arr_val = (1000000 / freq_val) - 1;
+      }
+      else // โหมดปรับ Duty Cycle (10.0% ถึง 90.0%)
+      {
+          duty_permille = 100 + (uint32_t)adc_val * 800 / 4095;
+      }
+
+      // คำนวณ CCR ให้สัมพันธ์กับ ARR เสมอ
+      pwm_val = ((arr_val + 1) * duty_permille) / 1000;
+
+      __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
+  }
+
+  // 3. แสดงผลบนจอ OLED ทุกๆ 250 ms
+  if (HAL_GetTick() - OLED_time >= 250)
+  {
+      OLED_time = HAL_GetTick();
+
+      ssd1306_Fill(Black);
+
+      // บรรทัดที่ 1: แสดงโหมดปัจจุบัน
+      ssd1306_SetCursor(0, 0);
+      if (mode == 0)
+          ssd1306_WriteString(">> MODE: SET FREQ <<", Font_7x10, White);
+      else
+          ssd1306_WriteString(">> MODE: SET DUTY <<", Font_7x10, White);
+
+      // บรรทัดที่ 2: ความถี่
+      sprintf(str, "F: %4lu Hz", freq_val);
+      ssd1306_SetCursor(0, 16);
+      ssd1306_WriteString(str, Font_11x18, White);
+
+      // บรรทัดที่ 3: Duty Cycle
+      sprintf(str, "D: %2lu.%1lu%%", duty_permille / 10, duty_permille % 10);
+      ssd1306_SetCursor(0, 36);
+      ssd1306_WriteString(str, Font_11x18, White);
+
+      // บรรทัดที่ 4: คำแนะนำกดปุ่ม
+      ssd1306_SetCursor(0, 54);
+      ssd1306_WriteString("Press B1 to Switch", Font_7x10, White);
+
+      ssd1306_UpdateScreen();
+  }
+/* USER CODE END 3 */
+```
+
+---
+
 ## ส่วนที่ 5: จุดแตกต่างสำคัญระหว่างจอ 1.3" (SH1106) กับ 0.96" (SSD1306)
 
 * **จอ 0.96 นิ้ว (SSD1306):** แรมของจอมีขนาด `128x64` ตรงกับขนาดการแสดงผล

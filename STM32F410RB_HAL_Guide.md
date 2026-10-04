@@ -354,6 +354,120 @@ uint32_t last_time = 0; // ตัวแปรจับเวลา
 
 ---
 
+#### แบบ E: ปรับทั้งความถี่และ Duty Cycle พร้อมกัน (ด้วยวอลลุ่มตัวเดียว)
+> 🚨 **หัวใจสำคัญ:** เมื่อ `ARR` เปลี่ยนตามความถี่ ค่า `CCR` **จะต้องถูกคำนวณใหม่ให้สัมพันธ์กับ `ARR` ก้อนใหม่เสมอ**:
+> $$\mathbf{CCR} = \frac{(\mathbf{ARR} + 1) \times \text{Duty\_Permille}}{1000}$$
+
+```c
+/* USER CODE BEGIN PV */
+uint16_t adc_val = 0;
+uint32_t freq_val = 500;       // ความถี่ 500 - 2,000 Hz
+uint32_t arr_val = 1999;       // ค่า ARR
+uint32_t duty_permille = 200;  // ค่า Duty 200 - 800 (คือ 20.0% - 80.0%)
+uint32_t pwm_val = 400;        // ค่า CCR สัมพันธ์กับ ARR
+uint32_t last_time = 0;
+/* USER CODE END PV */
+
+/* USER CODE BEGIN 2 */
+__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1);
+HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+/* USER CODE END 2 */
+
+/* USER CODE BEGIN 3 */
+if (HAL_GetTick() - last_time >= 50)
+{
+    last_time = HAL_GetTick();
+
+    // 1. อ่าน ADC (0 - 4095)
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+    {
+        adc_val = HAL_ADC_GetValue(&hadc1);
+    }
+    HAL_ADC_Stop(&hadc1);
+
+    // 2. คำนวณความถี่ (500 Hz - 2,000 Hz)
+    freq_val = 500 + (uint32_t)adc_val * 1500 / 4095;
+
+    // 3. คำนวณ ARR ที่ PSC = 83 (1 MHz tick)
+    arr_val = (1000000 / freq_val) - 1;
+
+    // 4. คำนวณ Duty (20.0% - 80.0%)
+    duty_permille = 200 + (uint32_t)adc_val * 600 / 4095;
+
+    // 5. คำนวณ Compare (CCR) ให้สัมพันธ์กับ ARR เสมอ
+    pwm_val = ((arr_val + 1) * duty_permille) / 1000;
+
+    // 6. อัปเดตฮาร์ดแวร์ไทเมอร์ทั้งคู่
+    __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
+
+    printf("ADC:%4d | F:%4lu Hz | D:%lu.%lu%% | ARR:%4lu | CCR:%4lu\r\n",
+           adc_val, freq_val, duty_permille / 10, duty_permille % 10, arr_val, pwm_val);
+}
+/* USER CODE END 3 */
+```
+
+---
+
+#### แบบ F: วอลลุ่ม 1 ตัว + ปุ่มกดสีฟ้า B1 (PC13) สลับโหมดปรับ Freq หรือ Duty
+กดปุ่ม B1 (PC13) สลับโหมด: โหมด 0 ปรับความถี่ (Duty ล็อค) / โหมด 1 ปรับ Duty (ความถี่ล็อค)
+
+```c
+/* USER CODE BEGIN PV */
+uint16_t adc_val = 0;
+uint32_t freq_val = 1000;      // ค่าเริ่มต้น 1,000 Hz
+uint32_t arr_val = 999;
+uint32_t duty_permille = 500;  // Duty เริ่มต้น 50.0%
+uint32_t pwm_val = 500;
+uint8_t mode = 0;              // 0 = Freq, 1 = Duty
+uint8_t last_btn_state = GPIO_PIN_SET;
+uint32_t last_time = 0;
+/* USER CODE END PV */
+
+/* USER CODE BEGIN 3 */
+// 1. ตรวจจับการกดปุ่ม B1 (PC13) เพื่อสลับโหมด
+uint8_t current_btn = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+if (current_btn == GPIO_PIN_RESET && last_btn_state == GPIO_PIN_SET)
+{
+    mode = !mode; // สลับ 0 <-> 1
+    HAL_Delay(50); // กันปุ่มกระดอน
+}
+last_btn_state = current_btn;
+
+// 2. อ่าน ADC และปรับค่าตามโหมด
+if (HAL_GetTick() - last_time >= 50)
+{
+    last_time = HAL_GetTick();
+
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+    {
+        adc_val = HAL_ADC_GetValue(&hadc1);
+    }
+    HAL_ADC_Stop(&hadc1);
+
+    if (mode == 0) // ปรับความถี่ (500 Hz ถึง 2,000 Hz)
+    {
+        freq_val = 500 + (uint32_t)adc_val * 1500 / 4095;
+        arr_val = (1000000 / freq_val) - 1;
+    }
+    else // ปรับ Duty Cycle (10.0% ถึง 90.0%)
+    {
+        duty_permille = 100 + (uint32_t)adc_val * 800 / 4095;
+    }
+
+    // คำนวณ CCR ให้สัมพันธ์กับ ARR เสมอ
+    pwm_val = ((arr_val + 1) * duty_permille) / 1000;
+
+    __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
+}
+/* USER CODE END 3 */
+```
+
+---
+
 ### 🧠 สรุปความสัมพันธ์ PSC, ARR และ CCR (เข้าใจง่ายที่สุดสำหรับทำข้อสอบ)
 
 เปรียบเทียบเหมือน **"คนวิ่งในสนามแข่งรูปวงกลม"**:
