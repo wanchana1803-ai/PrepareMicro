@@ -181,3 +181,92 @@ ser.close()
 1. **เช็คพอร์ต COM**: กดปุ่ม `Windows + X` > เลือก **Device Manager** > ดูที่หมวด **Ports (COM & LPT)** ว่า STM32 อยู่ที่ `COM` อะไร (เช่น COM3, COM5)
 2. **เช็ค Baud Rate**: ต้องตรงกันทั้งใน STM32CubeMX และใน Python (`115200` หรือ `9600`)
 3. **พอร์ตชนกัน (Port Busy)**: ปิดโปรแกรม Serial Monitor อื่นๆ (เช่น PuTTY, Arduino IDE, STM32CubeIDE Terminal) ก่อนรัน Python เสมอ
+
+---
+
+## ส่วนที่ 3: เทมเพลตมาตรฐานแบบจัดเต็ม (Universal GUI Template)
+
+ไฟล์ตัวอย่างสมบูรณ์พร้อมใช้งานสร้างไว้ที่: **`STM32_GUI_Template.py`** บนโฟลเดอร์โปรเจกต์
+
+### สรุป Widget พื้นฐานของ Tkinter ที่ต้องใช้ในข้อสอบ:
+
+| สิ่งที่ต้องการทำ | คำสั่งสร้าง Widget ใน Tkinter | คำสั่งอ่าน/เขียนค่า |
+| :--- | :--- | :--- |
+| **ป้ายข้อความ** | `lbl = tk.Label(root, text="ข้อความ", font=("Arial", 12))` | `lbl.config(text="ค่าใหม่")` |
+| **ปุ่มกด** | `btn = tk.Button(root, text="กดส่ง", bg="green", command=my_func)` | - |
+| **กล่องพิมพ์ข้อความ** | `entry = ttk.Entry(root, width=20)` | อ่าน: `txt = entry.get()`<br>ลบ: `entry.delete(0, tk.END)` |
+| **สไลเดอร์ปรับค่า** | `scale = tk.Scale(root, from_=0, to=1000, orient="horizontal", command=on_slide)` | อ่าน: `val = scale.get()`<br>ตั้งค่า: `scale.set(500)` |
+| **ดร็อปดาวน์เลือกพอร์ต** | `cb = ttk.Combobox(root, textvariable=port_var, values=port_list)` | อ่าน: `port_var.get()` |
+| **กล่องข้อความหลายบรรทัด** | `txt = scrolledtext.ScrolledText(root, height=8)` | เขียน: `txt.insert(tk.END, "ข้อความ\n")`<br>ลบ: `txt.delete("1.0", tk.END)` |
+
+---
+
+### โค้ดฝั่ง STM32 (`main.c`) ที่ทำงานร่วมกับ Universal GUI Template:
+
+```c
+/* USER CODE BEGIN PV */
+uint8_t rx_byte;
+char rx_buf[32];
+uint8_t rx_idx = 0;
+uint16_t adc_val = 0;
+uint16_t pwm_val = 500;
+uint32_t last_send_time = 0;
+/* USER CODE END PV */
+
+/* USER CODE BEGIN 2 */
+__HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1);
+HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+/* USER CODE END 2 */
+
+/* USER CODE BEGIN 3 */
+// 1. รับคำสั่งจาก Python (ทีละตัวอักษรแบบ Non-blocking Timeout 5ms)
+if (HAL_UART_Receive(&huart2, &rx_byte, 1, 5) == HAL_OK)
+{
+    if (rx_byte == '1') // สั่งเปิดไฟ
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+    }
+    else if (rx_byte == '0') // สั่งปิดไฟ
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+    }
+    else if (rx_byte == 'T') // สลับสถานะไฟ
+    {
+        HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+    }
+    else if (rx_byte == '\n' || rx_byte == '\r') // จบคำสั่งยาว (เช่น P750)
+    {
+        rx_buf[rx_idx] = '\0';
+        if (rx_buf[0] == 'P') // คำสั่งปรับ PWM เช่น P750
+        {
+            pwm_val = atoi(&rx_buf[1]);
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
+        }
+        rx_idx = 0; // เคลียร์บัฟเฟอร์
+    }
+    else if (rx_idx < sizeof(rx_buf) - 1)
+    {
+        rx_buf[rx_idx++] = rx_byte;
+    }
+}
+
+// 2. ส่งค่า ADC และ Duty Cycle กลับไป Python ทุก 100 ms
+if (HAL_GetTick() - last_send_time >= 100)
+{
+    last_send_time = HAL_GetTick();
+
+    HAL_ADC_Start(&hadc1);
+    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+    {
+        adc_val = HAL_ADC_GetValue(&hadc1);
+    }
+    HAL_ADC_Stop(&hadc1);
+
+    // ส่งข้อความรูปแบบมาตรฐานที่ Python แยกคำง่ายๆ
+    char msg[64];
+    sprintf(msg, "ADC:%d | Duty:%d.%d%%\r\n", adc_val, pwm_val / 10, pwm_val % 10);
+    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+}
+/* USER CODE END 3 */
+```
+
