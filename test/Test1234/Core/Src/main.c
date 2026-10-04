@@ -47,13 +47,11 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint8_t last_btn_state = GPIO_PIN_SET; // ปุ่ม Active Low ไม่กดคือ SET (1)
+uint16_t adc_val = 0;
+float freq_target = 0.0f; // ความถี่เป้าหมาย (500 - 1200 Hz)
+uint16_t arr_val = 0;     // ค่า ARR ที่คำนวณได้
+uint16_t ccr_val = 0;     // ค่า Compare 50%
 uint32_t last_time = 0;
-uint8_t press_count = 0;              // ตัวแปรนับจำนวนครั้งที่กด (ถ้าต้องการนับ)
-uint16_t adc_val = 0;   // ค่าดิบ 12-bit (0 ถึง 4095)
-float voltage = 0.0f;   // ค่าแรงดันจริง (0.0 ถึง 3.3 V)
-uint32_t adc_prev_tick = 0;
-uint16_t pwm_val = 0;       // ตัวแปรเก็บค่า Duty Cycle (0 - 999)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -109,7 +107,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // เริ่มสร้างสัญญาณ PWM
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -119,59 +117,29 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  uint8_t current_btn_state = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
-
-	  if (HAL_GetTick() - adc_prev_tick >= 100)
-	   {
-	       adc_prev_tick = HAL_GetTick();
-
-	       // 1. สั่งเริ่มการอ่านค่า ADC
-	       HAL_ADC_Start(&hadc1);
-
-	       // 2. รอการแปลงสัญญาณเสร็จสิ้น (Timeout 10 ms)
-	       if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
-	       {
-	           // 3. ดึงค่าผลลัพธ์มาเก็บไว้ในตัวแปร (0 - 4095)
-	           adc_val = HAL_ADC_GetValue(&hadc1);
-
-	           // 4. (สูตรยอดฮิตข้อสอบ) แปลงค่าตัวเลขเป็นแรงดัน Volt จริง (0 - 3.3V)
-	           voltage = ((float)adc_val * 3.3f) / 4095.0f;
-	       }
-	       if (voltage >= 1.65f)
-	             {
-	                 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   // ไฟติด
-	             }
-	             else
-	             {
-	                 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // ไฟดับ
-	             }
-	             // ปริ้นท์ค่าออกไปดูที่ Serial Monitor
-	             printf("ADC Raw: %4d | Volt: %d.%02d V\r\n",
-	                    adc_val, (int)voltage, (int)(voltage * 100) % 100);
-
-	       // 5. สั่งหยุดการทำงานของ ADC
-	       HAL_ADC_Stop(&hadc1);
-	   }
-	  if (HAL_GetTick() - last_time >= 50) // อัปเดตทุกๆ 50 ms (ลื่นไหล ไม่กระตุก)
-	   {
-	       last_time = HAL_GetTick();
-	       // 1. อ่านค่า ADC
-	       HAL_ADC_Start(&hadc1);
-	       if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
-	       {
-	           adc_val = HAL_ADC_GetValue(&hadc1); // ได้ค่า 0 - 4095
-	       }
-	       HAL_ADC_Stop(&hadc1);
-	       // 2. สูตร Mapping: แปลงจากช่วง 0-4095 เป็นช่วง 0-999
-	       // สูตร: pwm_val = (adc_raw * 999) / 4095;
-	       pwm_val = (uint32_t)adc_val * 999 / 4095;
-	       // 3. สั่งปรับความกว้างพัลส์ (Duty Cycle) ให้หลอดไฟ
-	       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
-	       // 4. ปริ้นท์ดูค่าเปรียบเทียบระหว่าง ADC กับ PWM (%)
-	       printf("ADC: %4d | PWM: %3d (%d%%)\r\n",
-	              adc_val, pwm_val, (pwm_val * 100) / 999);
-
-  }
+	  if (HAL_GetTick() - last_time >= 50)
+	    {
+	        last_time = HAL_GetTick();
+	        // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
+	        HAL_ADC_Start(&hadc1);
+	        if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+	        {
+	            adc_val = HAL_ADC_GetValue(&hadc1);
+	        }
+	        HAL_ADC_Stop(&hadc1);
+	        // 2. แปลงค่า ADC (0 - 4095) ไปเป็น ความถี่เป้าหมาย (500 - 1200 Hz)
+	        // ช่วงความถี่กว้าง = 1200 - 500 = 700 Hz
+	        freq_target = 500.0f + ((float)adc_val * 700.0f / 4095.0f);
+	        // 3. คำนวณค่า ARR และล็อก Duty 50%
+	        arr_val = (uint16_t)(1000000.0f / freq_target) - 1;
+	        ccr_val = (arr_val + 1) / 2; // ครึ่งหนึ่งของคาบเสมอ = 50% Duty Cycle
+	        // 4. สั่งเปลี่ยนทั้งความถี่ (ARR) และ Duty 50% (CCR) แบบ Real-time!
+	        __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+	        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
+	        // 5. ปริ้นท์ดูค่าความถี่จริงที่กำลังจ่ายออกไป
+	        printf("ADC: %4d | Freq: %4.1f Hz | ARR: %4d | Duty: 50.0%%\r\n",
+	               adc_val, freq_target, arr_val);
+	    }
   }
   /* USER CODE END 3 */
 }
@@ -295,9 +263,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 15;
+  htim1.Init.Prescaler = 83;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 999;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;

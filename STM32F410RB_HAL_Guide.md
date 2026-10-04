@@ -271,6 +271,43 @@ uint32_t last_time = 0; // ตัวแปรจับเวลา
       printf("ADC: %4d | PWM: %4d | Duty: %d.%d%%\r\n", 
              adc_val, pwm_val, pwm_val / 10, pwm_val % 10);
   }
+#### แบบ C: โจทย์ประยุกต์ขั้นสูง! ล็อก Duty Cycle 50% คงที่ แล้วเปลี่ยนความถี่แบบ Real-time (500 Hz ถึง 1.2 kHz)
+> 💡 **หัวใจสำคัญ:**  
+> - **เปลี่ยนความถี่สดๆ:** ใช้คำสั่ง `__HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);`  
+> - **รักษา Duty 50%:** ตั้งค่า Compare ให้เป็นครึ่งหนึ่งของคาบเสมอ: `ccr_val = (arr_val + 1) / 2;`  
+> - **สูตรหา ARR (เมื่อใช้ PSC = 83):** $\text{ARR} = \frac{1,000,000}{f} - 1$  
+>   - ที่ $500\text{ Hz}$: $\text{ARR} = \frac{1,000,000}{500} - 1 = \mathbf{1999}$ (Compare 50% = 1000)  
+>   - ที่ $1,200\text{ Hz}$: $\text{ARR} = \frac{1,000,000}{1,200} - 1 = \mathbf{832}$ (Compare 50% = 416)
+
+```c
+  /* USER CODE BEGIN 3 */
+  if (HAL_GetTick() - last_time >= 50)
+  {
+      last_time = HAL_GetTick();
+
+      // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
+      HAL_ADC_Start(&hadc1);
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          adc_val = HAL_ADC_GetValue(&hadc1);
+      }
+      HAL_ADC_Stop(&hadc1);
+
+      // 2. แปลงค่า ADC (0 - 4095) ไปเป็น ความถี่เป้าหมาย (500 - 1200 Hz)
+      float freq_target = 500.0f + ((float)adc_val * 700.0f / 4095.0f);
+
+      // 3. คำนวณค่า ARR และค่า Compare สำหรับ 50% Duty Cycle
+      uint16_t arr_val = (uint16_t)(1000000.0f / freq_target) - 1;
+      uint16_t ccr_val = (arr_val + 1) / 2; // ล็อก 50% ตลอดเวลา
+
+      // 4. สั่งเปลี่ยนความถี่ (ARR) และ Duty 50% (CCR) แบบ Real-time!
+      __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
+
+      // 5. ปริ้นท์ดูค่าความถี่
+      printf("ADC: %4d | Freq: %4.1f Hz | ARR: %4d | Duty: 50.0%%\r\n", 
+             adc_val, freq_target, arr_val);
+  }
   /* USER CODE END 3 */
 ```
 
@@ -366,7 +403,8 @@ uint32_t prev_tick = 0; // ตัวแปรเก็บเวลาครั�
 | **Button Toggle (Edge)** | `if (curr == RESET && last == SET) { Toggle(); count++; Delay(20); } last = curr;` | ตัวแปร: `USER CODE BEGIN PV`<br>ตรวจจับ: `USER CODE BEGIN 3` |
 | **Analog In (ADC)** | `HAL_ADC_Start(&hadc1);`<br>`HAL_ADC_PollForConversion(&hadc1, timeout);`<br>`val = HAL_ADC_GetValue(&hadc1);`<br>`HAL_ADC_Stop(&hadc1);` | ตัวแปร: `USER CODE BEGIN PV`<br>อ่านค่า: `USER CODE BEGIN 3` |
 | **Analog Out (DAC)**| `HAL_DAC_Start(&hdac, DAC_CHANNEL_1);`<br>`HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, val);` | Start: `USER CODE BEGIN 2`<br>Set: `USER CODE BEGIN 3` |
-| **Output PWM** | `HAL_TIM_PWM_Start(&htimx, TIM_CHANNEL_x);`<br>`__HAL_TIM_SET_COMPARE(&htimx, TIM_CHANNEL_x, duty);` | Start: `USER CODE BEGIN 2`<br>Set: `USER CODE BEGIN 3` |
+| **Output PWM (ปรับ Duty)** | `HAL_TIM_PWM_Start(&htimx, TIM_CHANNEL_x);`<br>`__HAL_TIM_SET_COMPARE(&htimx, TIM_CHANNEL_x, duty);` | Start: `USER CODE BEGIN 2`<br>Set: `USER CODE BEGIN 3` |
+| **Change PWM Freq (สดๆ)** | `__HAL_TIM_SET_AUTORELOAD(&htimx, arr);`<br>`__HAL_TIM_SET_COMPARE(&htimx, ch, (arr+1)/2);` | `USER CODE BEGIN 3` |
 | **Non-blocking Timer** | `if (HAL_GetTick() - prev_tick >= INTERVAL) { prev_tick = HAL_GetTick(); ... }` | ตัวแปร: `USER CODE BEGIN PV`<br>เงื่อนไข: `USER CODE BEGIN 3` |
 
 
