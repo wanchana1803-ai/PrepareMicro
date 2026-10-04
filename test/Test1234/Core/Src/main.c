@@ -21,7 +21,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ssd1306.h"
+#include "fonts.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -42,16 +44,17 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 
+I2C_HandleTypeDef hi2c1;
+
 TIM_HandleTypeDef htim1;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint16_t adc_val = 0;
-float freq_target = 0.0f; // ความถี่เป้าหมาย (500 - 1200 Hz)
-uint16_t arr_val = 0;     // ค่า ARR ที่คำนวณได้
-uint16_t ccr_val = 0;     // ค่า Compare 50%
-uint32_t last_time = 0;
+uint16_t adc_val = 0;   // ค่า ADC (0 - 4095)
+uint16_t pwm_val = 0;   // ค่าความสว่าง PWM (0 - 999)
+uint32_t last_time = 0; // ตัวแปรจับเวลา
+float freq_target = 0.0f;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -60,6 +63,7 @@ static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -106,8 +110,10 @@ int main(void)
   MX_ADC1_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // เริ่มสร้างสัญญาณ PWM
+  ssd1306_Init(); // สั่งเปิดและล้างหน้าจอ OLED
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -118,28 +124,52 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 	  if (HAL_GetTick() - last_time >= 50)
-	    {
-	        last_time = HAL_GetTick();
-	        // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
-	        HAL_ADC_Start(&hadc1);
-	        if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
-	        {
-	            adc_val = HAL_ADC_GetValue(&hadc1);
-	        }
-	        HAL_ADC_Stop(&hadc1);
-	        // 2. แปลงค่า ADC (0 - 4095) ไปเป็น ความถี่เป้าหมาย (500 - 1200 Hz)
-	        // ช่วงความถี่กว้าง = 1200 - 500 = 700 Hz
-	        freq_target = 500.0f + ((float)adc_val * 700.0f / 4095.0f);
-	        // 3. คำนวณค่า ARR และล็อก Duty 50%
-	        arr_val = (uint16_t)(1000000.0f / freq_target) - 1;
-	        ccr_val = (arr_val + 1) / 2; // ครึ่งหนึ่งของคาบเสมอ = 50% Duty Cycle
-	        // 4. สั่งเปลี่ยนทั้งความถี่ (ARR) และ Duty 50% (CCR) แบบ Real-time!
-	        __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
-	        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
-	        // 5. ปริ้นท์ดูค่าความถี่จริงที่กำลังจ่ายออกไป
-	        printf("ADC: %4d | Freq: %4.1f Hz | ARR: %4d | Duty: 50.0%%\r\n",
-	               adc_val, freq_target, arr_val);
-	    }
+	   {
+	       last_time = HAL_GetTick();
+
+	       // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
+	       HAL_ADC_Start(&hadc1);
+	       if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+	       {
+	           adc_val = HAL_ADC_GetValue(&hadc1);
+	       }
+	       HAL_ADC_Stop(&hadc1);
+
+	       // 2. แปลงค่า ADC (0 - 4095) ไปเป็น ความถี่เป้าหมาย (1000 - 2000 Hz)
+	       freq_target = 1000.0f + ((float)adc_val * 1000.0f / 4095.0f);
+
+	       // 3. คำนวณค่า ARR และค่า Compare สำหรับ 50% Duty Cycle
+	       uint16_t arr_val = (uint16_t)(1000000.0f / freq_target) - 1;
+	       uint16_t ccr_val = (arr_val + 1) / 4; // ล็อก 50% ตลอดเวลา
+
+	       // 4. สั่งเปลี่ยนความถี่ (ARR) และ Duty 50% (CCR) แบบ Real-time!
+	       __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+	       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
+
+	       // 5. ปริ้นท์ดูค่าความถี่
+	       printf("ADC: %4d | Freq: %4.1f Hz | ARR: %4d | Duty: 50.0%%\r\n",
+	              adc_val, freq_target, arr_val);
+
+	       char str[20];
+	       	    ssd1306_Fill(Black); // 1. ล้างจอเดิม
+	       	    // บรรทัดที่ 1: หัวข้อ
+	       	    ssd1306_SetCursor(0, 0);
+	       	    ssd1306_WriteString("STM32 CONTROLLER", Font_7x10, White);
+	       	    // บรรทัดที่ 2: แสดงค่าความถี่ (Font 11x18 ตัวใหญ่ชัดเจน)
+	       	    sprintf(str, "%4d Hz", (int)freq_target);
+	       	    ssd1306_SetCursor(0, 16);
+	       	    ssd1306_WriteString(str, Font_11x18, White);
+	       	    // บรรทัดที่ 3: แสดงค่า ADC
+	       	    sprintf(str, "ADC: %4d", adc_val);
+	       	    ssd1306_SetCursor(0, 42);
+	       	    ssd1306_WriteString(str, Font_7x10, White);
+	       	    // บรรทัดที่ 4: แสดง Duty Cycle
+	       	    ssd1306_SetCursor(70, 42);
+	       	    ssd1306_WriteString("D: 50%", Font_7x10, White);
+	       	    // สั่งส่งภาพขึ้นจอจริง (ห้ามลืมคำสั่งนี้เด็ดขาด!)
+	       	    ssd1306_UpdateScreen();
+	   }
+
   }
   /* USER CODE END 3 */
 }
@@ -240,6 +270,40 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -356,6 +420,7 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
