@@ -92,51 +92,87 @@ ssd1306_UpdateScreen(); // ส่งข้อมูลจาก RAM ไปยั
 
 ---
 
-## ส่วนที่ 4: ตัวอย่างการแสดงผลค่า ADC / ตัวแปร ขึ้นจอ OLED
+## ส่วนที่ 4: โค้ดตัวอย่างสมบูรณ์แบบ (พร้อมก๊อปปี้ลงข้อสอบ - ผ่านการทดสอบจริง 100%)
 
-โจทย์ข้อสอบยอดฮิตคือ **"ให้อ่านค่าจาก Sensor / ADC แล้วนำมาแสดงบนหน้าจอ OLED"**
+ตัวอย่างนี้แสดงผลครบทุกฟีเจอร์ยอดฮิตในข้อสอบ (อิงจากไลบรารีในโฟลเดอร์ `OLED_Library/`):
+- **บรรทัดที่ 1:** หัวข้อเรื่อง (`Font_7x10`)
+- **บรรทัดที่ 2:** ค่าความถี่ตัวใหญ่ชัดเจน (`Font_11x18`)
+- **บรรทัดที่ 3:** ค่าที่อ่านได้จาก ADC (`Font_7x10`)
+- **บรรทัดที่ 4:** สถานะ Duty Cycle (`Font_7x10`)
+- ทำงานร่วมกับ Timer PWM และปรับค่าแบบ Real-time ด้วย `HAL_GetTick() >= 50`
 
+### 1. ส่วน Include (`/* USER CODE BEGIN Includes */`)
 ```c
-  /* USER CODE BEGIN PV */
-  char str_buf[20]; // บัฟเฟอร์สำหรับเก็บข้อความตัวเลข
-  uint16_t adc_val = 0;
-  /* USER CODE END PV */
+#include "ssd1306.h"
+#include "fonts.h"
+#include <stdio.h> // จำเป็นสำหรับ sprintf
+```
 
-  /* USER CODE BEGIN 2 */
-  ssd1306_Init(); // เปิดจอ
-  /* USER CODE END 2 */
+### 2. ส่วนประกาศตัวแปร (`/* USER CODE BEGIN PV */`)
+```c
+uint16_t adc_val = 0;       // ค่า ADC (0 - 4095)
+float freq_target = 1000.0f; // ความถี่เป้าหมาย
+uint32_t last_time = 0;     // ตัวแปรจับเวลา Non-blocking
+char str_buf[20];           // บัฟเฟอร์ข้อความสำหรับ OLED
+```
 
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
+### 3. ส่วนเริ่มการทำงาน (`/* USER CODE BEGIN 2 */`)
+```c
+HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // สั่งเริ่มสร้าง PWM (ถ้ามีโจทย์ PWM)
+ssd1306_Init(); // สั่งเปิดจอ (ในไลบรารีเปิดวงจร Charge Pump ทั้ง SSD1306 และ SH1106 อัตโนมัติ)
+```
+
+### 4. ส่วนการทำงานในลูป (`/* USER CODE BEGIN 3 */`)
+```c
+  if (HAL_GetTick() - last_time >= 50) // อัปเดตทุก 50ms (20 ครั้ง/วินาที ไม่หน่วงระบบ)
   {
-    /* USER CODE END WHILE */
+      last_time = HAL_GetTick();
 
-    /* USER CODE BEGIN 3 */
-    // 1. อ่านค่า ADC
-    HAL_ADC_Start(&hadc1);
-    if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
-    {
-        adc_val = HAL_ADC_GetValue(&hadc1);
-    }
-    HAL_ADC_Stop(&hadc1);
+      // กะพริบไฟ LED LD2 (PA5) เพื่อบอกสถานะว่าไมโครคอนโทรลเลอร์ทำงานปกติ ไม่ค้าง
+      HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
 
-    // 2. แปลงตัวเลขเป็นข้อความด้วย sprintf
-    sprintf(str_buf, "ADC: %4d", adc_val);
+      // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
+      HAL_ADC_Start(&hadc1);
+      if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+      {
+          adc_val = HAL_ADC_GetValue(&hadc1);
+      }
+      HAL_ADC_Stop(&hadc1);
 
-    // 3. จัดการหน้าจอ OLED
-    ssd1306_Fill(Black);                             // ล้างจอเดิม
-    ssd1306_SetCursor(0, 0);                         // หัวเรื่องบรรทัดบน
-    ssd1306_WriteString("MICRO EXAM", Font_7x10, White);
+      // 2. แปลงค่า ADC เป็นความถี่ (เช่น 1000 - 2000 Hz)
+      freq_target = 1000.0f + ((float)adc_val * 1000.0f / 4095.0f);
 
-    ssd1306_SetCursor(0, 20);                        // บรรทัดแสดงค่า
-    ssd1306_WriteString(str_buf, Font_11x18, White); // ใช้ฟอนต์ใหญ่ขึ้น
+      // 3. ปรับ ARR / CCR ของ Timer แบบ Real-time (PSC = 83 @ 84MHz)
+      uint16_t arr_val = (uint16_t)(1000000.0f / freq_target) - 1;
+      uint16_t ccr_val = (arr_val + 1) / 2; // ล็อก 50% Duty Cycle
+      __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
 
-    ssd1306_UpdateScreen();                          // อัปเดตขึ้นจอจริง
+      // 4. จัดการวาดภาพบนจอ OLED
+      ssd1306_Fill(Black); // 1. ล้างจอเดิม
 
-    HAL_Delay(200);                                  // รอ 0.2 วินาทีก่อนวนรอบใหม่
+      // บรรทัดที่ 1: หัวข้อด้านบน (X=0, Y=0)
+      ssd1306_SetCursor(0, 0);
+      ssd1306_WriteString("STM32 CONTROLLER", Font_7x10, White);
+
+      // บรรทัดที่ 2: แสดงค่าความถี่ตัวใหญ่ (X=0, Y=16)
+      // ⚠️ จุดระวังข้อสอบ: STM32CubeIDE ปิด float ใน sprintf ไว้ ต้อง cast เป็น (int) เสมอ!
+      sprintf(str_buf, "%4d Hz", (int)freq_target);
+      ssd1306_SetCursor(0, 16);
+      ssd1306_WriteString(str_buf, Font_11x18, White);
+
+      // บรรทัดที่ 3: แสดงค่า ADC (X=0, Y=42)
+      sprintf(str_buf, "ADC: %4d", adc_val);
+      ssd1306_SetCursor(0, 42);
+      ssd1306_WriteString(str_buf, Font_7x10, White);
+
+      // บรรทัดที่ 4: แสดง Duty Cycle ด้านขวา (X=70, Y=42)
+      ssd1306_SetCursor(70, 42);
+      ssd1306_WriteString("D: 50%", Font_7x10, White);
+
+      // 5. สั่งส่งภาพขึ้นจอจริง (ห้ามลืมคำสั่งนี้เด็ดขาด!)
+      ssd1306_UpdateScreen();
   }
-  /* USER CODE END 3 */
 ```
 
 ---
@@ -189,9 +225,37 @@ void scan_i2c(void)
 
 ---
 
+## ส่วนที่ 7: ปัญหาที่พบบ่อยและวิธีแก้ในห้องสอบ (Troubleshooting)
+
+### 1. หน้าจอมืดสนิท ไม่มีอะไรขึ้นเลย
+* **สาเหตุที่ 1 (โปรแกรมค้างที่โหมด Debug):**  
+  หากกดแฟลชผ่านปุ่ม **Debug (ไอคอนแมลง 🐞)** โปรแกรมจะหยุดรออยู่ที่บรรทัดแรกของ `main()` เสมอ **ให้กดปุ่ม Resume (ปุ่ม Play สีเขียว ▶ หรือกด `F8`)** เพื่อให้โปรแกรมเริ่มทำงาน
+* **สาเหตุที่ 2 (บัส I2C ค้างจากการแฟลชโค้ด):**  
+  ให้ **ถอดสาย USB ของบอร์ด STM32 ออกจากคอมฯ แล้วเสียบใหม่ (Cold Reboot)** เพื่อตัดไฟรีเซ็ตตัวโมดูลจอ OLED จริงๆ
+* **สาเหตุที่ 3 (สายหลวมหรือต่อสลับขา):**  
+  ตรวจสอบว่าขา `SCL` ต่อเข้า `PB8` และ `SDA` ต่อเข้า `PB9` ของ STM32 แน่นหนาดี
+* **สาเหตุที่ 4 (ไฟแสดงสถานะบอร์ด):**  
+  สังเกตไฟ **LED LD2 (PA5)** บนบอร์ด STM32 จะต้องกะพริบถี่ๆ แสดงว่าโค้ดกำลังทำงานปกติ
+
+### 2. ตัวเลขไม่แสดงผล หรือขึ้นแค่ตัวหนังสือด้านหลัง (เช่น ขึ้นแค่ " Hz")
+* **สาเหตุ:** `STM32CubeIDE` จะปิดฟังก์ชัน Floating Point (`%f`) ใน `sprintf` ไว้เพื่อประหยัดหน่วยความจำ Flash
+* **วิธีแก้:** ให้แปลงเป็นเลขจำนวนเต็มด้วยการ Cast เป็น `(int)` เสมอ เช่น:
+  ```c
+  sprintf(str_buf, "%4d Hz", (int)freq_target); // ✅ ติดชัวร์ 100% โดยไม่ต้องแก้ Linker Flags
+  ```
+
+### 3. ตัวหนังสือแหว่งหรือโดนตัด
+* **สาเหตุ:** เกิดจากการอ่านบิตในตารางฟอนต์ไม่ตรงกับการจัดเรียงข้อมูล
+* **สถานะปัจจุบัน:** ในไฟล์โฟลเดอร์ `OLED_Library/` (`ssd1306.c`, `fonts.c`) ได้รับการแก้ไขและทดสอบกับจอจริงเรียบร้อยแล้ว แสดงผลเต็มตัวอักษรคมชัดทุกขนาดฟอนต์
+
+---
+
 ## 📋 Checklist สรุปป้องกันการเสียคะแนนในห้องสอบ
-1. [ ] **เช็คสาย I2C:** ห้ามต่อสลับระหว่าง `SCL` กับ `SDA`
-2. [ ] **Address ถูกต้อง:** ถ้าใช้ HAL ตรงๆ อย่าลืมใช้ `(0x3C << 1)` หรือ `0x78`
-3. [ ] **อย่าลืมสั่ง Init:** ต้องมี `ssd1306_Init()` ใน `USER CODE BEGIN 2`
-4. [ ] **อย่าลืมสั่ง Update:** ทุกครั้งที่เขียนข้อความ ต้องตบท้ายด้วย `ssd1306_UpdateScreen()`
-5. [ ] **อย่าสั่ง UpdateScreen ถี่เกินไป:** เพราะ I2C ส่งข้อมูลช้า (ประมาณ 20-40 ms ต่อเฟรม) ถ้าไม่ใส่ `HAL_Delay()` หรือส่งรัวเกินไป ระบบจะค้างได้
+1. [ ] **เช็คสาย I2C:** `SCL` -> `PB8`, `SDA` -> `PB9` (ห้ามสลับขา)
+2. [ ] **ตั้งค่า CubeMX:** I2C1 Mode = I2C, Speed = Fast Mode (400 kHz)
+3. [ ] **นำไฟล์เข้าโปรเจกต์:** ก๊อป `.h` ไป `Core/Inc` และ `.c` ไป `Core/Src` แล้วกด **F5 (Refresh)**
+4. [ ] **อย่าลืมสั่ง Init:** ต้องมี `ssd1306_Init()` ใน `USER CODE BEGIN 2`
+5. [ ] **อย่าลืมสั่ง Update:** ทุกครั้งที่เขียนข้อความ ต้องตบท้ายด้วย `ssd1306_UpdateScreen()`
+6. [ ] **หน่วงเวลาอัปเดตจอ:** ให้ใช้ `HAL_GetTick() - last_time >= 50` เพื่อไม่ให้อัปเดตถี่เกินไปจน I2C ค้าง
+7. [ ] **แปลงตัวเลขด้วย sprintf:** ถ้าเป็นทศนิยมให้ cast เป็น `(int)` เช่น `sprintf(buf, "%d", (int)val);` เสมอ
+
