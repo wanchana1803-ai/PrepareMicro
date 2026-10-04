@@ -51,13 +51,9 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint16_t adc_val = 0;
-float duty_percent = 20.0f;
-uint16_t ccr_val = 200;
-uint32_t last_time = 0;
-char str_buf[25];
-
-#define PWM_ARR_FIXED  999 // กำหนดความถี่ 1,000 Hz คงที่ (PSC = 83)
+uint16_t adc_val = 0;   // ค่า ADC (0 - 4095)
+uint16_t pwm_val = 0;   // ค่าความสว่าง PWM (0 - 999)
+uint32_t last_time = 0; // ตัวแปรจับเวลา
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -115,10 +111,7 @@ int main(void)
   MX_TIM1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // สั่งเริ่มสร้าง PWM
-  __HAL_TIM_SET_AUTORELOAD(&htim1, PWM_ARR_FIXED); // ตั้ง ARR ให้ได้ 1,000 Hz
-  __HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1); // เปิด Preload ป้องกันคลื่นสะดุด/ยืดคาบตอนเปลี่ยน Duty
-  htim1.Instance->CR1 |= TIM_CR1_ARPE;                // เปิด Auto-reload preload
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   ssd1306_Init(); // เปิดจอ OLED
   /* USER CODE END 2 */
 
@@ -129,53 +122,51 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  if (HAL_GetTick() - last_time >= 50)
+	  if (HAL_GetTick() - last_time >= 50) // อัปเดตทุกๆ 50 ms (ลื่นไหล ไม่กระตุก)
 	   {
 	       last_time = HAL_GetTick();
-	       HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5); // ไฟ LED กะพริบบอกสถานะบอร์ด
 
-	       // 1. อ่านค่า ADC จากวอลลุ่ม (0 - 4095)
+	       // 1. อ่านค่า ADC จากตัวต้านทานปรับค่าได้
 	       HAL_ADC_Start(&hadc1);
 	       if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
 	       {
-	           adc_val = HAL_ADC_GetValue(&hadc1);
+	           adc_val = HAL_ADC_GetValue(&hadc1); // อ่านค่า 0 - 4095
 	       }
 	       HAL_ADC_Stop(&hadc1);
 
-	       // 2. คำนวณ Duty Cycle ในช่วง 20.0% ถึง 80.0%
-	       duty_percent = 20.0f + ((float)adc_val * 60.0f / 4095.0f);
+	       // 2. คำนวณเป็น Duty Cycle 200 - 800 (20.0% - 80.0%)
+	       pwm_val = 200 + (uint32_t)adc_val * 600 / 4095;
 
-	       // 3. คำนวณค่า CCR (ช่วง 200 ถึง 800)
-	       ccr_val = (uint16_t)(((PWM_ARR_FIXED + 1) * duty_percent) / 100.0f);
+	       // 3. สั่งจ่ายค่า Duty Cycle ให้หลอดไฟ LED (ขา PA8)
+	       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
 
-	       // 4. สั่งเปลี่ยน Duty Cycle ทันที
-	       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
+	       // 4. ปริ้นท์ดูค่า
+	       printf("ADC: %4d | PWM: %4d | Duty: %d.%d%%\r\n",
+	              adc_val, pwm_val, pwm_val / 10, pwm_val % 10);
 
 	       // 5. แสดงผลบนจอ OLED
-	       ssd1306_Fill(Black);
+	       char str[20];
+	       ssd1306_Fill(Black); // ล้างจอเดิม
 
 	       // บรรทัดที่ 1: หัวข้อ
 	       ssd1306_SetCursor(0, 0);
 	       ssd1306_WriteString("PWM CONTROLLER", Font_7x10, White);
 
-	       // บรรทัดที่ 2: ค่า Duty Cycle ตัวใหญ่ (Font 11x18)
-	       // เทคนิคแยกทศนิยม 1 ตำแหน่ง เพื่อเลี่ยงบั๊ก Float ใน CubeIDE
-	       int duty_int = (int)duty_percent;
-	       int duty_dec = (int)(duty_percent * 10.0f) % 10;
-	       sprintf(str_buf, "Duty: %2d.%1d %%", duty_int, duty_dec);
+	       // บรรทัดที่ 2: แสดงค่า Duty Cycle ตัวใหญ่ (Font 11x18)
+	       sprintf(str, "Duty: %2d.%1d%%", pwm_val / 10, pwm_val % 10);
 	       ssd1306_SetCursor(0, 16);
-	       ssd1306_WriteString(str_buf, Font_11x18, White);
+	       ssd1306_WriteString(str, Font_11x18, White);
 
-	       // บรรทัดที่ 3: ค่า ADC และ CCR (Font 7x10)
-	       sprintf(str_buf, "ADC:%4d CCR:%3d", adc_val, ccr_val);
+	       // บรรทัดที่ 3: แสดงค่า ADC และค่า PWM (CCR)
+	       sprintf(str, "ADC:%4d PWM:%3d", adc_val, pwm_val);
 	       ssd1306_SetCursor(0, 40);
-	       ssd1306_WriteString(str_buf, Font_7x10, White);
+	       ssd1306_WriteString(str, Font_7x10, White);
 
-	       // บรรทัดที่ 4: ความถี่คงที่ (Font 7x10)
+	       // บรรทัดที่ 4: แสดงความถี่คงที่
 	       ssd1306_SetCursor(0, 52);
-	       ssd1306_WriteString("Freq: 1000 Hz (FIX)", Font_7x10, White);
+	       ssd1306_WriteString("Freq: 1000 Hz", Font_7x10, White);
 
-	       // 6. ส่งภาพขึ้นจอจริง
+	       // ส่งภาพขึ้นจอจริง
 	       ssd1306_UpdateScreen();
 	   }
 
