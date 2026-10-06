@@ -1,17 +1,17 @@
 """
 =============================================================================
-  STM32 Motor PWM & Rotary Encoder Telemetry Dashboard
+  STM32 Motor PWM Speed Control & Encoder Telemetry (RPM & Direction)
   ไฟล์: pwmMotor.py
 =============================================================================
 คุณสมบัติ:
-  1. ควบคุมความเร็วมอเตอร์ PWM (Duty Cycle 0 - 100%) พร้อมปุ่มทิศทาง (FWD/REV/STOP)
-  2. แสดงผล Telemetry จาก STM32 แบบ Real-time ครบทั้ง 5 พารามิเตอร์:
+  1. ควบคุมความเร็วมอเตอร์ผ่าน PWM (Duty Cycle 0 - 100%)
+  2. แสดงผล Telemetry จาก STM32 แบบ Real-time ครบทั้ง 5 ค่า:
      - PWM Frequency (Hz / kHz)
      - PWM Duty Cycle (%)
-     - PWM Period (ms / µs)
+     - PWM Period (ms)
      - Encoder RPM (ความเร็วรอบต่อนาที)
-     - Encoder Direction (ทิศทางการหมุน CW / CCW / STOP)
-  3. ระบบป้องกันบอร์ดค้าง (Debounce Rate-Limit 50ms)
+     - Measured Direction (ตรวจวัดทิศทางการหมุนจริง: CW ↻ / CCW ↺ / STOP)
+  3. ระบบ Debounce Rate Limiting 50ms ป้องกันบัส Serial ล้น
   4. มอนิเตอร์ Serial Terminal พร้อมปุ่ม Clear Log
 =============================================================================
 """
@@ -29,11 +29,11 @@ BAUD = 115200
 class PWMMotorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("⚡ STM32 Motor PWM & Encoder Telemetry")
-        self.root.geometry("640x720")
+        self.root.title("⚡ STM32 Motor Speed & Encoder Telemetry")
+        self.root.geometry("640x660")
         self.root.resizable(False, False)
 
-        # กำหนดโทนสี Dark Engineering Theme
+        # โทนสี Dark Engineering Theme
         self.BG_COLOR = "#0D1117"
         self.FG_COLOR = "#C9D1D9"
         self.ACCENT_COLOR = "#58A6FF"
@@ -53,7 +53,6 @@ class PWMMotorApp:
         self.rpm_var = tk.StringVar(value="0.0 RPM")
         self.dir_var = tk.StringVar(value="STOP")
 
-        self.slider_val = tk.IntVar(value=0)
         self._after_id = None
 
         self.setup_styles()
@@ -78,7 +77,7 @@ class PWMMotorApp:
         # -------------------------------------------------------------
         header = tk.Frame(self.root, bg=self.BG_COLOR)
         header.pack(fill="x", pady=(12, 4))
-        tk.Label(header, text="⚙️ MOTOR PWM & ENCODER DASHBOARD", font=("Segoe UI", 16, "bold"),
+        tk.Label(header, text="⚙️ MOTOR SPEED & ENCODER MONITOR", font=("Segoe UI", 16, "bold"),
                  bg=self.BG_COLOR, fg=self.ACCENT_COLOR).pack()
 
         # -------------------------------------------------------------
@@ -106,24 +105,24 @@ class PWMMotorApp:
         # -------------------------------------------------------------
         # 2. Telemetry Cards (Live Monitoring)
         # -------------------------------------------------------------
-        telemetry_frame = ttk.LabelFrame(self.root, text=" 📊 Live Telemetry (From STM32) ", padding=10)
+        telemetry_frame = ttk.LabelFrame(self.root, text=" 📊 Live Telemetry (Measured by STM32) ", padding=10)
         telemetry_frame.pack(fill="x", padx=16, pady=5)
 
         cards_box = tk.Frame(telemetry_frame, bg=self.FRAME_BG)
         cards_box.pack(fill="x")
 
-        # แถวบน: PWM Metrics (Frequency, Duty, Period)
-        card_freq = self.create_metric_card(cards_box, "PWM Frequency", self.freq_var, "#58A6FF", 0, 0)
-        card_duty = self.create_metric_card(cards_box, "Duty Cycle", self.duty_disp_var, "#3FB950", 0, 1)
-        card_period = self.create_metric_card(cards_box, "PWM Period", self.period_var, "#D29922", 0, 2)
+        # แถวที่ 1: PWM Telemetry (Frequency, Duty Cycle, Period)
+        self.create_metric_card(cards_box, "PWM Frequency", self.freq_var, "#58A6FF", 0, 0)
+        self.create_metric_card(cards_box, "Duty Cycle", self.duty_disp_var, "#3FB950", 0, 1)
+        self.create_metric_card(cards_box, "PWM Period", self.period_var, "#D29922", 0, 2)
 
-        # แถวล่าง: Encoder Metrics (RPM, Direction)
-        card_rpm = self.create_metric_card(cards_box, "Encoder Speed", self.rpm_var, "#A371F7", 1, 0, colspan=2)
+        # แถวที่ 2: Encoder Telemetry (RPM และ Measured Direction)
+        self.create_metric_card(cards_box, "Encoder Speed", self.rpm_var, "#A371F7", 1, 0, colspan=2)
 
-        # การ์ด Direction แสดงผลพิเศษ
+        # การ์ดแสดงทิศทางการหมุนที่วัดได้ (Measured Direction Card)
         card_dir = tk.Frame(cards_box, bg=self.CARD_BG, bd=1, relief="ridge", padx=12, pady=8)
         card_dir.grid(row=1, column=2, padx=4, pady=5, sticky="nsew")
-        tk.Label(card_dir, text="Direction", font=("Segoe UI", 9, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
+        tk.Label(card_dir, text="Measured Direction", font=("Segoe UI", 9, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
         self.lbl_dir = tk.Label(card_dir, textvariable=self.dir_var, font=("Consolas", 18, "bold"),
                                 bg=self.CARD_BG, fg="#8B949E")
         self.lbl_dir.pack(pady=2)
@@ -132,45 +131,32 @@ class PWMMotorApp:
             cards_box.grid_columnconfigure(col, weight=1)
 
         # -------------------------------------------------------------
-        # 3. Motor Control Panel (PWM Duty Slider & Direction Buttons)
+        # 3. Motor Speed Control Slider (Duty Cycle 0 - 100%)
         # -------------------------------------------------------------
-        ctrl_frame = ttk.LabelFrame(self.root, text=" 🎮 Motor Control Panel ", padding=10)
+        ctrl_frame = ttk.LabelFrame(self.root, text=" 🎮 Motor Speed Control (PWM) ", padding=10)
         ctrl_frame.pack(fill="x", padx=16, pady=5)
 
-        # ปุ่มควบคุมทิศทาง (Forward / Reverse / Stop)
-        dir_btn_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
-        dir_btn_box.pack(fill="x", pady=(2, 8))
-
-        tk.Label(dir_btn_box, text="Direction Cmd:", font=("Segoe UI", 9, "bold"),
-                 bg=self.FRAME_BG, fg=self.FG_COLOR).pack(side="left", padx=5)
-
-        btn_fwd = tk.Button(dir_btn_box, text="⏩ FORWARD (CW)", bg="#238636", fg="white",
-                            font=("Segoe UI", 9, "bold"), width=16, command=lambda: self.send_cmd("F\n"))
-        btn_fwd.pack(side="left", padx=5)
-
-        btn_rev = tk.Button(dir_btn_box, text="⏪ REVERSE (CCW)", bg="#1F6FEB", fg="white",
-                            font=("Segoe UI", 9, "bold"), width=16, command=lambda: self.send_cmd("R\n"))
-        btn_rev.pack(side="left", padx=5)
-
-        btn_stop = tk.Button(dir_btn_box, text="⏹ STOP", bg="#DA3633", fg="white",
-                             font=("Segoe UI", 9, "bold"), width=12, command=self.stop_motor)
-        btn_stop.pack(side="left", padx=5)
-
-        # สไลเดอร์ปรับความเร็ว Duty Cycle 0 - 100%
         slider_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
         slider_box.pack(fill="x", pady=4)
 
         slider_header = tk.Frame(slider_box, bg=self.FRAME_BG)
         slider_header.pack(fill="x")
-        tk.Label(slider_header, text="Motor Speed (Duty Cycle %):", font=("Segoe UI", 9, "bold"),
+        tk.Label(slider_header, text="Set Duty Cycle (0 - 100%):", font=("Segoe UI", 10, "bold"),
                  bg=self.FRAME_BG, fg=self.FG_COLOR).pack(side="left")
-        self.lbl_slider_num = tk.Label(slider_header, text="0 %", font=("Consolas", 11, "bold"),
+        self.lbl_slider_num = tk.Label(slider_header, text="0 %", font=("Consolas", 12, "bold"),
                                        bg=self.FRAME_BG, fg="#3FB950")
         self.lbl_slider_num.pack(side="right")
 
         self.slider = ttk.Scale(slider_box, from_=0, to=100, orient="horizontal", command=self.on_slider_move)
-        self.slider.pack(fill="x", pady=4)
+        self.slider.pack(fill="x", pady=6)
         self.slider.bind("<ButtonRelease-1>", lambda e: self.send_pwm(int(self.slider.get())))
+
+        # ปุ่มหยุดฉุกเฉิน (Stop Motor)
+        btn_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
+        btn_box.pack(fill="x", pady=(4, 2))
+        btn_stop = tk.Button(btn_box, text="⏹ STOP MOTOR (Duty = 0%)", bg="#DA3633", fg="white",
+                             font=("Segoe UI", 9, "bold"), padx=10, pady=3, command=self.stop_motor)
+        btn_stop.pack(side="right")
 
         # -------------------------------------------------------------
         # 4. Serial Monitor Log
@@ -231,29 +217,25 @@ class PWMMotorApp:
     def on_slider_move(self, val):
         duty = int(float(val))
         self.lbl_slider_num.config(text=f"{duty} %")
-        # ระบบ Debounce Rate Limiting 50ms ป้องกันบัส Serial ล้น
+        # Debounce Rate Limiting 50ms ป้องกันบัส Serial ล้น
         if self._after_id is not None:
             self.root.after_cancel(self._after_id)
         self._after_id = self.root.after(50, lambda: self.send_pwm(duty))
 
     def send_pwm(self, duty):
         if self.ser and self.ser.is_open:
-            cmd = f"D{duty}\n" # เช่น D75\n
-            self.send_cmd(cmd)
+            cmd = f"D{duty}\n" # เช่น D50\n
+            try:
+                self.ser.write(cmd.encode("utf-8"))
+                self.log(f"PC -> MCU: {cmd.strip()}")
+            except Exception as e:
+                self.log(f"Error TX: {e}")
+                self.disconnect_serial()
 
     def stop_motor(self):
         self.slider.set(0)
         self.lbl_slider_num.config(text="0 %")
-        self.send_cmd("S\n")
-
-    def send_cmd(self, cmd_str):
-        if self.ser and self.ser.is_open:
-            try:
-                self.ser.write(cmd_str.encode("utf-8"))
-                self.log(f"PC -> MCU: {cmd_str.strip()}")
-            except Exception as e:
-                self.log(f"Error TX: {e}")
-                self.disconnect_serial()
+        self.send_pwm(0)
 
     def serial_reader(self):
         """ เธรดอ่านข้อมูล Telemetry อัตโนมัติจาก STM32 """
@@ -267,8 +249,8 @@ class PWMMotorApp:
 
     def parse_telemetry(self, line):
         """
-        แยกวิเคราะห์ข้อมูลจาก STM32 รูปแบบมาตรฐาน:
-        ตัวอย่าง: F:1000|D:75.0|T:1.00|RPM:320.5|DIR:CW
+        แยกวิเคราะห์ข้อมูลจาก STM32 รูปแบบ:
+        ตัวอย่าง: F:1000|D:50|T:1.00|RPM:280.5|DIR:CW
         """
         self.log(f"MCU: {line}")
         try:
