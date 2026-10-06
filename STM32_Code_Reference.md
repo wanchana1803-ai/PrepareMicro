@@ -184,11 +184,27 @@ char tx_buf[80];
 > **ใช้คู่กับโปรแกรม Python:** `pwm_freq_duty_motor_control.py`  
 > คำสั่งที่รับ: `F:<freq>|D:<duty>\n` เช่น `F:2000|D:50\n` (ความถี่ 2,000 Hz, Duty 50%)
 
-### 2.1 สูตรการคำนวณปรับความถี่และ Duty Cycle แบบ Real-time
-ที่ Timer Clock = $1,000,000\text{ Hz}$ ($\text{PSC} = 83$ ที่บัส 84 MHz):
-$$\text{ARR} = \frac{1,000,000}{f} - 1$$
-$$\text{CCR} = \frac{\text{Duty}\% \times (\text{ARR} + 1)}{100}$$
-$$\text{Period (ms)} = \frac{1,000}{f}$$
+### 2.1 สูตรและการคำนวณแบบ Single Slider (Duty 20% - 80% และ Freq 500 Hz - 1,200 Hz)
+เมื่อใช้ Slider ตัวเดียว (สเกล 0% ถึง 100%) เพื่อควบคุมทั้งสองค่าพร้อมกัน:
+* **สูตรแปลงค่าความถี่ (Frequency):**
+  $$f = 500 + \frac{\text{Slider}}{100} \times (1200 - 500) = 500 + 7 \times \text{Slider}\quad (\text{Hz})$$
+* **สูตรแปลงค่า Duty Cycle:**
+  $$\text{Duty} = 20 + \frac{\text{Slider}}{100} \times (80 - 20) = 20 + 0.6 \times \text{Slider}\quad (\%)$$
+* **สูตรหาค่า Timer Registers ($\text{Timer Clock} = 1\text{ MHz}$ ที่ $\text{PSC} = 83$):**
+  $$\text{ARR} = \frac{1,000,000}{f} - 1$$
+  $$\text{CCR} = \frac{\text{Duty} \times (\text{ARR} + 1)}{100}$$
+  $$\text{Period (ms)} = \frac{1,000}{f}$$
+
+#### 📊 ตารางค่า Golden Numbers ตามตำแหน่ง Slider:
+| Slider (%) | Frequency (Hz) | Duty Cycle (%) | Period (ms) | Auto-Reload (ARR) | Compare (CCR1) |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **0% (Min)** | **500 Hz** | **20 %** | **2.00 ms** | **1999** | **400** |
+| **25%** | **675 Hz** | **35 %** | **1.48 ms** | **1480** | **518** |
+| **50% (Mid)** | **850 Hz** | **50 %** | **1.18 ms** | **1175** | **588** |
+| **75%** | **1,025 Hz** | **65 %** | **0.98 ms** | **975** | **634** |
+| **100% (Max)** | **1,200 Hz** | **80 %** | **0.83 ms** | **832** | **666** |
+
+*(กรณีนำไปใช้กับ Potentiometer ADC 12-bit บนบอร์ด STM32 โดยตรง: $\text{Slider} = \frac{\text{ADC} \times 100}{4095}$)*
 
 ### 2.2 โค้ดในส่วน `while(1)` สำหรับคุมทั้งความถี่และ Duty
 แทนที่เนื้อหาใน `/* USER CODE BEGIN 3 */` ด้วยบล็อกนี้:

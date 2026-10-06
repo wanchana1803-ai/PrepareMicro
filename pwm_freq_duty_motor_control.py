@@ -1,22 +1,25 @@
 """
 =============================================================================
-  STM32 Motor Speed & Encoder Telemetry (Dual Frequency & PWM Duty Control)
+  STM32 Motor Speed & Encoder Telemetry (Single Slider Dual Control)
   ไฟล์: pwm_freq_duty_motor_control.py
 =============================================================================
 คุณสมบัติ:
-  1. ควบคุมทั้ง ความถี่ (Frequency: 100 Hz - 20,000 Hz) และ Duty Cycle (0 - 100%)
-  2. แสดงผล Telemetry จาก STM32 แบบ Real-time ครบทั้ง 5 ค่า:
-     - PWM Frequency (Hz / kHz)
+  1. ใช้ Slider ตัวเดียวควบคุมพร้อมกันทั้ง:
+     - Frequency (ความถี่): 500 Hz ถึง 1,200 Hz
+     - Duty Cycle (ความกว้างพัลส์): 20% ถึง 80%
+  2. สูตรการแปลงเชิงเส้น (Linear Mapping):
+     - ที่ Slider 0%   -> F = 500 Hz,   Duty = 20% (Period = 2.00 ms)
+     - ที่ Slider 50%  -> F = 850 Hz,   Duty = 50% (Period = 1.18 ms)
+     - ที่ Slider 100% -> F = 1,200 Hz, Duty = 80% (Period = 0.83 ms)
+  3. แสดงผล Telemetry จาก STM32 แบบ Real-time ครบทั้ง 5 ค่า:
+     - PWM Frequency (Hz)
      - PWM Duty Cycle (%)
      - PWM Period (ms)
      - Encoder RPM (ความเร็วรอบต่อนาที)
      - Measured Direction (ทิศทางการหมุนจริง: CW ↻ / CCW ↺ / STOP)
-  3. แถบปุ่ม Quick Presets:
-     - Frequency Presets: 500 Hz, 1 kHz, 2 kHz, 5 kHz, 10 kHz, 20 kHz
-     - Duty Presets: 0%, 25%, 50%, 75%, 100%
-     - ปุ่ม STOP MOTOR ฉุกเฉิน
-  4. ระบบ Debounce Rate Limiting 50ms ป้องกันบัส Serial ล้น
-  5. รูปแบบคำสั่งที่ส่งไป STM32: "F:<freq>|D:<duty>\\n"
+  4. ปุ่ม Quick Presets: 0% (Min), 25%, 50% (Mid), 75%, 100% (Max) และปุ่ม STOP ฉุกเฉิน
+  5. ระบบ Debounce Rate Limiting 50ms ป้องกันบัส Serial ล้น
+  6. คำสั่งส่งไปยัง STM32: "F:<freq>|D:<duty>\n" เช่น "F:500|D:20\n"
 =============================================================================
 """
 
@@ -29,12 +32,18 @@ import serial.tools.list_ports
 
 BAUD = 115200
 
+# ขอบเขตตามโจทย์
+FREQ_MIN = 500       # 500 Hz
+FREQ_MAX = 1200      # 1,200 Hz
+DUTY_MIN = 20        # 20 %
+DUTY_MAX = 80        # 80 %
 
-class DualPWMApp:
+
+class SingleSliderDualControlApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("⚡ STM32 Motor Dual Control (Frequency & Duty Cycle)")
-        self.root.geometry("680x790")
+        self.root.title("⚡ STM32 Single Slider (Freq 500-1200Hz & Duty 20-80%)")
+        self.root.geometry("680x760")
         self.root.resizable(False, False)
 
         # โทนสี Dark Engineering Theme
@@ -50,14 +59,15 @@ class DualPWMApp:
         self.port = tk.StringVar()
         self.status = tk.StringVar(value="● DISCONNECTED")
 
-        # ค่าควบคุม
-        self.current_freq = 1000   # ความถี่เริ่มต้น 1,000 Hz
-        self.current_duty = 0      # Duty เริ่มต้น 0 %
+        # ค่าควบคุมปัจจุบัน
+        self.slider_pos = 0          # ตำแหน่ง 0 - 100 %
+        self.target_freq = FREQ_MIN  # 500 Hz
+        self.target_duty = DUTY_MIN  # 20 %
 
-        # ตัวแปรแสดงผล Telemetry
-        self.freq_var = tk.StringVar(value="1000 Hz")
-        self.duty_disp_var = tk.StringVar(value="0.0 %")
-        self.period_var = tk.StringVar(value="1.00 ms")
+        # ตัวแปรแสดงผล Telemetry จาก STM32
+        self.freq_var = tk.StringVar(value="500 Hz")
+        self.duty_disp_var = tk.StringVar(value="20.0 %")
+        self.period_var = tk.StringVar(value="2.00 ms")
         self.rpm_var = tk.StringVar(value="0.0 RPM")
         self.dir_var = tk.StringVar(value="STOP")
 
@@ -86,10 +96,10 @@ class DualPWMApp:
         # -------------------------------------------------------------
         header = tk.Frame(self.root, bg=self.BG_COLOR)
         header.pack(fill="x", pady=(12, 4))
-        tk.Label(header, text="⚙️ DUAL PWM & ENCODER MONITOR", font=("Segoe UI", 16, "bold"),
+        tk.Label(header, text="⚙️ SINGLE SLIDER DUAL CONTROL", font=("Segoe UI", 16, "bold"),
                  bg=self.BG_COLOR, fg=self.ACCENT_COLOR).pack()
-        tk.Label(header, text="Dynamic Frequency (Hz) & Duty Cycle (%) Control", font=("Segoe UI", 9),
-                 bg=self.BG_COLOR, fg="#8B949E").pack()
+        tk.Label(header, text="Duty: 20% - 80%  |  Frequency: 500 Hz - 1,200 Hz", font=("Segoe UI", 10, "bold"),
+                 bg=self.BG_COLOR, fg="#7EE787").pack()
 
         # -------------------------------------------------------------
         # 1. Serial Connection
@@ -141,69 +151,72 @@ class DualPWMApp:
             cards_box.grid_columnconfigure(col, weight=1)
 
         # -------------------------------------------------------------
-        # 3. Frequency Control Section (100 Hz - 20,000 Hz)
+        # 3. Single Slider Control Section (Master Slider)
         # -------------------------------------------------------------
-        freq_frame = ttk.LabelFrame(self.root, text=" 🎵 1. PWM Frequency Control (100 Hz - 20,000 Hz) ", padding=10)
-        freq_frame.pack(fill="x", padx=16, pady=4)
+        ctrl_frame = ttk.LabelFrame(self.root, text=" 🎛️ Single Slider Dual Controller ", padding=12)
+        ctrl_frame.pack(fill="x", padx=16, pady=5)
 
-        freq_header = tk.Frame(freq_frame, bg=self.FRAME_BG)
-        freq_header.pack(fill="x")
-        tk.Label(freq_header, text="Set Frequency (Hz):", font=("Segoe UI", 10, "bold"),
-                 bg=self.FRAME_BG, fg=self.FG_COLOR).pack(side="left")
-        self.lbl_freq_num = tk.Label(freq_header, text="1,000 Hz", font=("Consolas", 12, "bold"),
-                                     bg=self.FRAME_BG, fg="#58A6FF")
-        self.lbl_freq_num.pack(side="right")
+        # แถวแสดงผลค่าที่กำลังตั้ง (Calculated Targets)
+        disp_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
+        disp_box.pack(fill="x", pady=(0, 6))
 
-        self.slider_freq = ttk.Scale(freq_frame, from_=100, to=20000, orient="horizontal", command=self.on_freq_move)
-        self.slider_freq.set(1000)
-        self.slider_freq.pack(fill="x", pady=6)
-        self.slider_freq.bind("<ButtonRelease-1>", lambda e: self.send_commands())
+        # Target Frequency Display
+        box_f = tk.Frame(disp_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
+        box_f.pack(side="left", expand=True, fill="x", padx=3)
+        tk.Label(box_f, text="Target Frequency", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
+        self.lbl_target_freq = tk.Label(box_f, text="500 Hz", font=("Consolas", 14, "bold"), bg=self.CARD_BG, fg="#58A6FF")
+        self.lbl_target_freq.pack()
 
-        # ปุ่ม Presets ความถี่
-        freq_preset_box = tk.Frame(freq_frame, bg=self.FRAME_BG)
-        freq_preset_box.pack(fill="x", pady=(2, 2))
-        tk.Label(freq_preset_box, text="Presets:", font=("Segoe UI", 9), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", padx=(0, 6))
+        # Slider Position %
+        box_pos = tk.Frame(disp_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
+        box_pos.pack(side="left", expand=True, fill="x", padx=3)
+        tk.Label(box_pos, text="Slider Position", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
+        self.lbl_target_pos = tk.Label(box_pos, text="0 %", font=("Consolas", 14, "bold"), bg=self.CARD_BG, fg="#F0883E")
+        self.lbl_target_pos.pack()
 
-        for f_val, f_lbl in [(500, "500Hz"), (1000, "1kHz"), (2000, "2kHz"), (5000, "5kHz"), (10000, "10kHz"), (20000, "20kHz")]:
-            btn = ttk.Button(freq_preset_box, text=f_lbl, style="Preset.TButton", width=7,
-                             command=lambda f=f_val: self.set_freq_preset(f))
+        # Target Duty Display
+        box_d = tk.Frame(disp_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
+        box_d.pack(side="left", expand=True, fill="x", padx=3)
+        tk.Label(box_d, text="Target Duty Cycle", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
+        self.lbl_target_duty = tk.Label(box_d, text="20 %", font=("Consolas", 14, "bold"), bg=self.CARD_BG, fg="#3FB950")
+        self.lbl_target_duty.pack()
+
+        # The Single Master Slider (0 to 100)
+        self.slider = ttk.Scale(ctrl_frame, from_=0, to=100, orient="horizontal", command=self.on_slider_move)
+        self.slider.set(0)
+        self.slider.pack(fill="x", pady=(10, 4))
+        self.slider.bind("<ButtonRelease-1>", lambda e: self.send_commands())
+
+        # สเกลกำกับด้านล่าง Slider
+        ticks_frame = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
+        ticks_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(ticks_frame, text="◀ Min: 500 Hz | Duty 20%", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="left")
+        tk.Label(ticks_frame, text="Mid: 850 Hz | Duty 50%", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", expand=True)
+        tk.Label(ticks_frame, text="Max: 1,200 Hz | Duty 80% ▶", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="right")
+
+        # Quick Presets Buttons
+        preset_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
+        preset_box.pack(fill="x", pady=(2, 2))
+        tk.Label(preset_box, text="Presets:", font=("Segoe UI", 9, "bold"), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", padx=(0, 6))
+
+        presets = [
+            (0, "Min (20% | 500Hz)"),
+            (25, "25% (35% | 675Hz)"),
+            (50, "Mid (50% | 850Hz)"),
+            (75, "75% (65% | 1025Hz)"),
+            (100, "Max (80% | 1200Hz)")
+        ]
+        for pos, label in presets:
+            btn = ttk.Button(preset_box, text=f"{pos}%", style="Preset.TButton", width=5,
+                             command=lambda p=pos: self.set_preset(p))
             btn.pack(side="left", padx=2)
 
-        # -------------------------------------------------------------
-        # 4. Duty Cycle Control Section (0 - 100%)
-        # -------------------------------------------------------------
-        duty_frame = ttk.LabelFrame(self.root, text=" 🎮 2. PWM Duty Cycle Control (0 - 100%) ", padding=10)
-        duty_frame.pack(fill="x", padx=16, pady=4)
-
-        duty_header = tk.Frame(duty_frame, bg=self.FRAME_BG)
-        duty_header.pack(fill="x")
-        tk.Label(duty_header, text="Set Duty Cycle (%):", font=("Segoe UI", 10, "bold"),
-                 bg=self.FRAME_BG, fg=self.FG_COLOR).pack(side="left")
-        self.lbl_duty_num = tk.Label(duty_header, text="0 %", font=("Consolas", 12, "bold"),
-                                     bg=self.FRAME_BG, fg="#3FB950")
-        self.lbl_duty_num.pack(side="right")
-
-        self.slider_duty = ttk.Scale(duty_frame, from_=0, to=100, orient="horizontal", command=self.on_duty_move)
-        self.slider_duty.set(0)
-        self.slider_duty.pack(fill="x", pady=6)
-        self.slider_duty.bind("<ButtonRelease-1>", lambda e: self.send_commands())
-
-        # ปุ่ม Presets Duty Cycle
-        duty_preset_box = tk.Frame(duty_frame, bg=self.FRAME_BG)
-        duty_preset_box.pack(fill="x", pady=(2, 2))
-        tk.Label(duty_preset_box, text="Presets:", font=("Segoe UI", 9), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", padx=(0, 6))
-
-        for duty in [0, 25, 50, 75, 100]:
-            btn = ttk.Button(duty_preset_box, text=f"{duty}%", style="Preset.TButton", width=5,
-                             command=lambda d=duty: self.set_duty_preset(d))
-            btn.pack(side="left", padx=2)
-
-        btn_stop = tk.Button(duty_preset_box, text="⏹ STOP (0%)", bg="#DA3633", fg="white",
+        btn_stop = tk.Button(preset_box, text="⏹ STOP (0%)", bg="#DA3633", fg="white",
                              font=("Segoe UI", 9, "bold"), padx=10, pady=2, command=self.stop_motor)
         btn_stop.pack(side="right")
 
         # -------------------------------------------------------------
-        # 5. Telemetry Terminal Log
+        # 4. Telemetry Terminal Log
         # -------------------------------------------------------------
         log_frame = ttk.LabelFrame(self.root, text=" 📜 Telemetry Log Terminal ", padding=8)
         log_frame.pack(fill="both", expand=True, padx=16, pady=(4, 12))
@@ -257,40 +270,45 @@ class DualPWMApp:
         self.status_label.config(fg="#F85149")
         self.log("System : Disconnected")
 
-    def on_freq_move(self, val):
-        self.current_freq = int(float(val))
-        self.lbl_freq_num.config(text=f"{self.current_freq:,} Hz")
-        self.debounce_send()
+    def on_slider_move(self, val):
+        self.slider_pos = int(float(val))
+        # คำนวณตามสูตร Linear Mapping:
+        # Freq: 500 ถึง 1,200 Hz
+        self.target_freq = int(FREQ_MIN + (self.slider_pos / 100.0) * (FREQ_MAX - FREQ_MIN))
+        # Duty: 20% ถึง 80%
+        self.target_duty = int(round(DUTY_MIN + (self.slider_pos / 100.0) * (DUTY_MAX - DUTY_MIN)))
 
-    def set_freq_preset(self, freq):
-        self.slider_freq.set(freq)
-        self.current_freq = freq
-        self.lbl_freq_num.config(text=f"{freq:,} Hz")
-        self.send_commands()
+        # อัปเดตตัวเลขแสดงผลบน UI
+        self.lbl_target_pos.config(text=f"{self.slider_pos} %")
+        self.lbl_target_freq.config(text=f"{self.target_freq:,} Hz")
+        self.lbl_target_duty.config(text=f"{self.target_duty} %")
 
-    def on_duty_move(self, val):
-        self.current_duty = int(float(val))
-        self.lbl_duty_num.config(text=f"{self.current_duty} %")
-        self.debounce_send()
-
-    def set_duty_preset(self, duty):
-        self.slider_duty.set(duty)
-        self.current_duty = duty
-        self.lbl_duty_num.config(text=f"{duty} %")
-        self.send_commands()
-
-    def stop_motor(self):
-        self.set_duty_preset(0)
-
-    def debounce_send(self):
+        # Debounce ส่งข้อมูล 50ms ป้องกันบัส Serial ล้น
         if self._after_id is not None:
             self.root.after_cancel(self._after_id)
         self._after_id = self.root.after(50, self.send_commands)
 
+    def set_preset(self, pos):
+        self.slider.set(pos)
+        self.on_slider_move(pos)
+        self.send_commands()
+
+    def stop_motor(self):
+        # สั่งหยุดมอเตอร์ Duty = 0%
+        self.target_duty = 0
+        self.lbl_target_duty.config(text="0 % (STOP)")
+        if self.ser and self.ser.is_open:
+            cmd = f"F:{self.target_freq}|D:0\n"
+            try:
+                self.ser.write(cmd.encode("utf-8"))
+                self.log(f"PC -> MCU: {cmd.strip()} (EMERGENCY STOP)")
+            except Exception as e:
+                self.log(f"Error TX: {e}")
+
     def send_commands(self):
         if self.ser and self.ser.is_open:
-            # รูปแบบคำสั่ง: "F:<freq>|D:<duty>\n" เช่น "F:2000|D:50\n"
-            cmd = f"F:{self.current_freq}|D:{self.current_duty}\n"
+            # คำสั่งคู่: "F:<freq>|D:<duty>\n" เช่น "F:850|D:50\n"
+            cmd = f"F:{self.target_freq}|D:{self.target_duty}\n"
             try:
                 self.ser.write(cmd.encode("utf-8"))
                 self.log(f"PC -> MCU: {cmd.strip()}")
@@ -345,5 +363,5 @@ class DualPWMApp:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = DualPWMApp(root)
+    app = SingleSliderDualControlApp(root)
     root.mainloop()
