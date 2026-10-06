@@ -7,19 +7,21 @@
   1. ใช้ Slider ตัวเดียวควบคุมพร้อมกันทั้ง:
      - Frequency (ความถี่): 500 Hz ถึง 1,200 Hz
      - Duty Cycle (ความกว้างพัลส์): 20% ถึง 80%
-  2. สูตรการแปลงเชิงเส้น (Linear Mapping):
-     - ที่ Slider 0%   -> F = 500 Hz,   Duty = 20% (Period = 2.00 ms)
-     - ที่ Slider 50%  -> F = 850 Hz,   Duty = 50% (Period = 1.18 ms)
-     - ที่ Slider 100% -> F = 1,200 Hz, Duty = 80% (Period = 0.83 ms)
+  2. การคำนวณแบบ Dynamic Real-time (ไม่ใช่ค่า Fix):
+     - Frequency : f = 500 + (Slider / 100) * (1200 - 500)  [Hz]
+     - Duty Cycle: D = 20 + (Slider / 100) * (80 - 20)      [%]
+     - PWM Period: T = 1000.0 / f                           [ms]
+     - Timer ARR : ARR = (1,000,000 / f) - 1
+     - Timer CCR1: CCR1 = (D * (ARR + 1)) / 100
   3. แสดงผล Telemetry จาก STM32 แบบ Real-time ครบทั้ง 5 ค่า:
-     - PWM Frequency (Hz)
-     - PWM Duty Cycle (%)
-     - PWM Period (ms)
+     - PWM Frequency (คำนวณสด)
+     - Duty Cycle (คำนวณสด)
+     - PWM Period (คำนวณสดตามสูตร T = 1000/f)
      - Encoder RPM (ความเร็วรอบต่อนาที)
      - Measured Direction (ทิศทางการหมุนจริง: CW ↻ / CCW ↺ / STOP)
-  4. ปุ่ม Quick Presets: 0% (Min), 25%, 50% (Mid), 75%, 100% (Max) และปุ่ม STOP ฉุกเฉิน
+  4. ปุ่ม Quick Presets: 0% (Min), 25%, 50% (Mid), 75%, 100% (Max) และปุ่ม STOP
   5. ระบบ Debounce Rate Limiting 50ms ป้องกันบัส Serial ล้น
-  6. คำสั่งส่งไปยัง STM32: "F:<freq>|D:<duty>\n" เช่น "F:500|D:20\n"
+  6. คำสั่งส่งไปยัง STM32: "F:<freq>|D:<duty>\n" เช่น "F:850|D:50\n"
 =============================================================================
 """
 
@@ -33,17 +35,18 @@ import serial.tools.list_ports
 BAUD = 115200
 
 # ขอบเขตตามโจทย์
-FREQ_MIN = 500       # 500 Hz
-FREQ_MAX = 1200      # 1,200 Hz
-DUTY_MIN = 20        # 20 %
-DUTY_MAX = 80        # 80 %
+FREQ_MIN = 500.0     # 500 Hz
+FREQ_MAX = 1200.0    # 1,200 Hz
+DUTY_MIN = 20.0      # 20 %
+DUTY_MAX = 80.0      # 80 %
+TIMER_CLOCK = 1000000.0  # 1 MHz (84MHz / (83 + 1))
 
 
 class SingleSliderDualControlApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("⚡ STM32 Single Slider (Freq 500-1200Hz & Duty 20-80%)")
-        self.root.geometry("680x760")
+        self.root.title("⚡ STM32 Single Slider (Dynamic Calculation: Freq, Period & Duty)")
+        self.root.geometry("690x810")
         self.root.resizable(False, False)
 
         # โทนสี Dark Engineering Theme
@@ -59,15 +62,18 @@ class SingleSliderDualControlApp:
         self.port = tk.StringVar()
         self.status = tk.StringVar(value="● DISCONNECTED")
 
-        # ค่าควบคุมปัจจุบัน
-        self.slider_pos = 0          # ตำแหน่ง 0 - 100 %
-        self.target_freq = FREQ_MIN  # 500 Hz
-        self.target_duty = DUTY_MIN  # 20 %
+        # ค่าควบคุมและคำนวณปัจจุบัน
+        self.slider_pos = 0.0
+        self.calc_freq = FREQ_MIN
+        self.calc_duty = DUTY_MIN
+        self.calc_period_ms = 1000.0 / FREQ_MIN
+        self.calc_arr = int(round(TIMER_CLOCK / FREQ_MIN)) - 1
+        self.calc_ccr = int(round((DUTY_MIN / 100.0) * (self.calc_arr + 1)))
 
-        # ตัวแปรแสดงผล Telemetry จาก STM32
-        self.freq_var = tk.StringVar(value="500 Hz")
-        self.duty_disp_var = tk.StringVar(value="20.0 %")
-        self.period_var = tk.StringVar(value="2.00 ms")
+        # ตัวแปรแสดงผลบน Telemetry Cards (อัปเดตแบบ Dynamic)
+        self.freq_var = tk.StringVar(value=f"{self.calc_freq:.1f} Hz")
+        self.duty_disp_var = tk.StringVar(value=f"{self.calc_duty:.1f} %")
+        self.period_var = tk.StringVar(value=f"{self.calc_period_ms:.2f} ms")
         self.rpm_var = tk.StringVar(value="0.0 RPM")
         self.dir_var = tk.StringVar(value="STOP")
 
@@ -76,6 +82,7 @@ class SingleSliderDualControlApp:
         self.setup_styles()
         self.build_gui()
         self.refresh_ports()
+        self.update_all_calculations(0.0)  # คำนวณค่าเริ่มต้นทันที
         self.root.protocol("WM_DELETE_WINDOW", self.close_program)
 
     def setup_styles(self):
@@ -96,10 +103,10 @@ class SingleSliderDualControlApp:
         # -------------------------------------------------------------
         header = tk.Frame(self.root, bg=self.BG_COLOR)
         header.pack(fill="x", pady=(12, 4))
-        tk.Label(header, text="⚙️ SINGLE SLIDER DUAL CONTROL", font=("Segoe UI", 16, "bold"),
+        tk.Label(header, text="⚙️ DYNAMIC PWM & ENCODER MONITOR", font=("Segoe UI", 16, "bold"),
                  bg=self.BG_COLOR, fg=self.ACCENT_COLOR).pack()
-        tk.Label(header, text="Duty: 20% - 80%  |  Frequency: 500 Hz - 1,200 Hz", font=("Segoe UI", 10, "bold"),
-                 bg=self.BG_COLOR, fg="#7EE787").pack()
+        tk.Label(header, text="Real-time Mathematical Calculation (Freq: 500-1200Hz | Duty: 20-80%)",
+                 font=("Segoe UI", 9, "bold"), bg=self.BG_COLOR, fg="#7EE787").pack()
 
         # -------------------------------------------------------------
         # 1. Serial Connection
@@ -124,62 +131,79 @@ class SingleSliderDualControlApp:
         self.status_label.pack(anchor="w", pady=(4, 0))
 
         # -------------------------------------------------------------
-        # 2. Live Telemetry Cards (5 ค่าครบถ้วน)
+        # 2. Live Dynamic Telemetry Cards (5 ค่าคำนวณสด)
         # -------------------------------------------------------------
-        telemetry_frame = ttk.LabelFrame(self.root, text=" 📊 Live Telemetry (Measured by STM32) ", padding=10)
+        telemetry_frame = ttk.LabelFrame(self.root, text=" 📊 Live Calculated Telemetry (ไม่มีการ Fix ค่า) ", padding=10)
         telemetry_frame.pack(fill="x", padx=16, pady=4)
 
         cards_box = tk.Frame(telemetry_frame, bg=self.FRAME_BG)
         cards_box.pack(fill="x")
 
         # แถว 1: Frequency, Duty Cycle, Period
-        self.create_metric_card(cards_box, "PWM Frequency", self.freq_var, "#58A6FF", 0, 0)
-        self.create_metric_card(cards_box, "Duty Cycle", self.duty_disp_var, "#3FB950", 0, 1)
-        self.create_metric_card(cards_box, "PWM Period", self.period_var, "#D29922", 0, 2)
+        self.card_freq = self.create_metric_card(cards_box, "PWM Frequency", self.freq_var, "f = 500 + 7×Slider", "#58A6FF", 0, 0)
+        self.card_duty = self.create_metric_card(cards_box, "Duty Cycle", self.duty_disp_var, "D = 20 + 0.6×Slider", "#3FB950", 0, 1)
+        self.card_period = self.create_metric_card(cards_box, "PWM Period", self.period_var, "T = 1000 / f", "#D29922", 0, 2)
 
         # แถว 2: RPM และ ทิศทางการหมุนจริง
-        self.create_metric_card(cards_box, "Encoder Speed", self.rpm_var, "#A371F7", 1, 0, colspan=2)
+        self.card_rpm = self.create_metric_card(cards_box, "Encoder Speed", self.rpm_var, "RPM = (|Δcnt|×60)/(CPR×Δt)", "#A371F7", 1, 0, colspan=2)
 
-        card_dir = tk.Frame(cards_box, bg=self.CARD_BG, bd=1, relief="ridge", padx=12, pady=8)
-        card_dir.grid(row=1, column=2, padx=4, pady=5, sticky="nsew")
+        # การ์ด Direction
+        card_dir = tk.Frame(cards_box, bg=self.CARD_BG, bd=1, relief="ridge", padx=12, pady=6)
+        card_dir.grid(row=1, column=2, padx=4, pady=4, sticky="nsew")
         tk.Label(card_dir, text="Measured Direction", font=("Segoe UI", 9, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
         self.lbl_dir = tk.Label(card_dir, textvariable=self.dir_var, font=("Consolas", 18, "bold"),
                                 bg=self.CARD_BG, fg="#8B949E")
-        self.lbl_dir.pack(pady=2)
+        self.lbl_dir.pack(pady=1)
+        tk.Label(card_dir, text="Sign of ΔCount", font=("Segoe UI", 7), bg=self.CARD_BG, fg="#6E7681").pack()
 
         for col in range(3):
             cards_box.grid_columnconfigure(col, weight=1)
 
         # -------------------------------------------------------------
-        # 3. Single Slider Control Section (Master Slider)
+        # 3. Single Slider Control Section (Dynamic Controller)
         # -------------------------------------------------------------
-        ctrl_frame = ttk.LabelFrame(self.root, text=" 🎛️ Single Slider Dual Controller ", padding=12)
+        ctrl_frame = ttk.LabelFrame(self.root, text=" 🎛️ Single Slider Dynamic Controller (0% - 100%) ", padding=12)
         ctrl_frame.pack(fill="x", padx=16, pady=5)
 
-        # แถวแสดงผลค่าที่กำลังตั้ง (Calculated Targets)
-        disp_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
-        disp_box.pack(fill="x", pady=(0, 6))
+        # แถวแสดงผลค่าการคำนวณสดอย่างละเอียด (Formula Breakdown)
+        calc_details_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
+        calc_details_box.pack(fill="x", pady=(0, 6))
 
-        # Target Frequency Display
-        box_f = tk.Frame(disp_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
+        # Target Frequency Box
+        box_f = tk.Frame(calc_details_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
         box_f.pack(side="left", expand=True, fill="x", padx=3)
-        tk.Label(box_f, text="Target Frequency", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
-        self.lbl_target_freq = tk.Label(box_f, text="500 Hz", font=("Consolas", 14, "bold"), bg=self.CARD_BG, fg="#58A6FF")
+        tk.Label(box_f, text="Frequency (f)", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
+        self.lbl_target_freq = tk.Label(box_f, text="500.0 Hz", font=("Consolas", 13, "bold"), bg=self.CARD_BG, fg="#58A6FF")
         self.lbl_target_freq.pack()
+        self.lbl_f_formula = tk.Label(box_f, text="500 + 7×(0%)", font=("Segoe UI", 7), bg=self.CARD_BG, fg="#6E7681")
+        self.lbl_f_formula.pack()
 
         # Slider Position %
-        box_pos = tk.Frame(disp_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
+        box_pos = tk.Frame(calc_details_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
         box_pos.pack(side="left", expand=True, fill="x", padx=3)
         tk.Label(box_pos, text="Slider Position", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
-        self.lbl_target_pos = tk.Label(box_pos, text="0 %", font=("Consolas", 14, "bold"), bg=self.CARD_BG, fg="#F0883E")
+        self.lbl_target_pos = tk.Label(box_pos, text="0.0 %", font=("Consolas", 13, "bold"), bg=self.CARD_BG, fg="#F0883E")
         self.lbl_target_pos.pack()
+        self.lbl_hw_info = tk.Label(box_pos, text="ARR: 1999 | CCR: 400", font=("Consolas", 7), bg=self.CARD_BG, fg="#D29922")
+        self.lbl_hw_info.pack()
 
-        # Target Duty Display
-        box_d = tk.Frame(disp_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
+        # Target Duty Box
+        box_d = tk.Frame(calc_details_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
         box_d.pack(side="left", expand=True, fill="x", padx=3)
-        tk.Label(box_d, text="Target Duty Cycle", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
-        self.lbl_target_duty = tk.Label(box_d, text="20 %", font=("Consolas", 14, "bold"), bg=self.CARD_BG, fg="#3FB950")
+        tk.Label(box_d, text="Duty Cycle (D)", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
+        self.lbl_target_duty = tk.Label(box_d, text="20.0 %", font=("Consolas", 13, "bold"), bg=self.CARD_BG, fg="#3FB950")
         self.lbl_target_duty.pack()
+        self.lbl_d_formula = tk.Label(box_d, text="20 + 0.6×(0%)", font=("Segoe UI", 7), bg=self.CARD_BG, fg="#6E7681")
+        self.lbl_d_formula.pack()
+
+        # Target Period Box
+        box_t = tk.Frame(calc_details_box, bg=self.CARD_BG, padx=8, pady=6, relief="ridge", bd=1)
+        box_t.pack(side="left", expand=True, fill="x", padx=3)
+        tk.Label(box_t, text="Period (T = 1/f)", font=("Segoe UI", 8, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
+        self.lbl_target_period = tk.Label(box_t, text="2.00 ms", font=("Consolas", 13, "bold"), bg=self.CARD_BG, fg="#D29922")
+        self.lbl_target_period.pack()
+        self.lbl_t_formula = tk.Label(box_t, text="1000 / 500 Hz", font=("Segoe UI", 7), bg=self.CARD_BG, fg="#6E7681")
+        self.lbl_t_formula.pack()
 
         # The Single Master Slider (0 to 100)
         self.slider = ttk.Scale(ctrl_frame, from_=0, to=100, orient="horizontal", command=self.on_slider_move)
@@ -187,31 +211,31 @@ class SingleSliderDualControlApp:
         self.slider.pack(fill="x", pady=(10, 4))
         self.slider.bind("<ButtonRelease-1>", lambda e: self.send_commands())
 
-        # สเกลกำกับด้านล่าง Slider
+        # สเกลกำกับใต้ Slider
         ticks_frame = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
         ticks_frame.pack(fill="x", pady=(0, 8))
-        tk.Label(ticks_frame, text="◀ Min: 500 Hz | Duty 20%", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="left")
-        tk.Label(ticks_frame, text="Mid: 850 Hz | Duty 50%", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", expand=True)
-        tk.Label(ticks_frame, text="Max: 1,200 Hz | Duty 80% ▶", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="right")
+        tk.Label(ticks_frame, text="◀ Min (0%): 500 Hz | 20% (T=2.00ms)", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="left")
+        tk.Label(ticks_frame, text="Mid (50%): 850 Hz | 50% (T=1.18ms)", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", expand=True)
+        tk.Label(ticks_frame, text="Max (100%): 1,200 Hz | 80% (T=0.83ms) ▶", font=("Segoe UI", 8), bg=self.FRAME_BG, fg="#8B949E").pack(side="right")
 
         # Quick Presets Buttons
         preset_box = tk.Frame(ctrl_frame, bg=self.FRAME_BG)
         preset_box.pack(fill="x", pady=(2, 2))
-        tk.Label(preset_box, text="Presets:", font=("Segoe UI", 9, "bold"), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", padx=(0, 6))
+        tk.Label(preset_box, text="Quick Presets:", font=("Segoe UI", 9, "bold"), bg=self.FRAME_BG, fg="#8B949E").pack(side="left", padx=(0, 6))
 
         presets = [
-            (0, "Min (20% | 500Hz)"),
-            (25, "25% (35% | 675Hz)"),
-            (50, "Mid (50% | 850Hz)"),
-            (75, "75% (65% | 1025Hz)"),
-            (100, "Max (80% | 1200Hz)")
+            (0, "0% (Min)"),
+            (25, "25%"),
+            (50, "50% (Mid)"),
+            (75, "75%"),
+            (100, "100% (Max)")
         ]
         for pos, label in presets:
-            btn = ttk.Button(preset_box, text=f"{pos}%", style="Preset.TButton", width=5,
+            btn = ttk.Button(preset_box, text=label, style="Preset.TButton", width=9,
                              command=lambda p=pos: self.set_preset(p))
             btn.pack(side="left", padx=2)
 
-        btn_stop = tk.Button(preset_box, text="⏹ STOP (0%)", bg="#DA3633", fg="white",
+        btn_stop = tk.Button(preset_box, text="⏹ STOP (Duty 0%)", bg="#DA3633", fg="white",
                              font=("Segoe UI", 9, "bold"), padx=10, pady=2, command=self.stop_motor)
         btn_stop.pack(side="right")
 
@@ -228,12 +252,13 @@ class SingleSliderDualControlApp:
         btn_clear = ttk.Button(log_frame, text="Clear Log", command=lambda: self.text_log.delete("1.0", "end"))
         btn_clear.pack(anchor="e", pady=(2, 0))
 
-    def create_metric_card(self, parent, title, variable, text_color, row, col, colspan=1):
-        card = tk.Frame(parent, bg=self.CARD_BG, bd=1, relief="ridge", padx=12, pady=8)
-        card.grid(row=row, column=col, columnspan=colspan, padx=4, pady=5, sticky="nsew")
+    def create_metric_card(self, parent, title, variable, formula_text, text_color, row, col, colspan=1):
+        card = tk.Frame(parent, bg=self.CARD_BG, bd=1, relief="ridge", padx=12, pady=6)
+        card.grid(row=row, column=col, columnspan=colspan, padx=4, pady=4, sticky="nsew")
         tk.Label(card, text=title, font=("Segoe UI", 9, "bold"), bg=self.CARD_BG, fg="#8B949E").pack()
         tk.Label(card, textvariable=variable, font=("Consolas", 18, "bold"),
-                 bg=self.CARD_BG, fg=text_color).pack(pady=2)
+                 bg=self.CARD_BG, fg=text_color).pack(pady=1)
+        tk.Label(card, text=formula_text, font=("Segoe UI", 7), bg=self.CARD_BG, fg="#6E7681").pack()
         return card
 
     def refresh_ports(self):
@@ -270,35 +295,65 @@ class SingleSliderDualControlApp:
         self.status_label.config(fg="#F85149")
         self.log("System : Disconnected")
 
+    def update_all_calculations(self, pos):
+        """
+        ฟังก์ชันคำนวณแบบ Dynamic 100% ไม่มีการ Fix ค่า:
+        1. Frequency (Hz) = 500 + (pos / 100) * (1200 - 500)
+        2. Duty Cycle (%) = 20 + (pos / 100) * (80 - 20)
+        3. Period (ms)    = 1000.0 / Frequency
+        4. ARR (Register) = round(1,000,000 / Frequency) - 1
+        5. CCR1 (Register)= round(Duty% * (ARR + 1) / 100)
+        """
+        self.slider_pos = float(pos)
+
+        # 1. คำนวณ Frequency และ Duty Cycle ตามสเกลเชิงเส้น
+        self.calc_freq = FREQ_MIN + (self.slider_pos / 100.0) * (FREQ_MAX - FREQ_MIN)
+        self.calc_duty = DUTY_MIN + (self.slider_pos / 100.0) * (DUTY_MAX - DUTY_MIN)
+
+        # 2. คำนวณ Period (ms) โดยตรงจากความถี่ T = 1 / f
+        self.calc_period_ms = 1000.0 / self.calc_freq
+
+        # 3. คำนวณค่า Registers ของฮาร์ดแวร์ Timer STM32 (Timer Clock = 1,000,000 Hz)
+        self.calc_arr = int(round(TIMER_CLOCK / self.calc_freq)) - 1
+        self.calc_ccr = int(round((self.calc_duty / 100.0) * (self.calc_arr + 1)))
+
+        # อัปเดตตัวแปรของการ์ด Telemetry สด
+        self.freq_var.set(f"{self.calc_freq:.1f} Hz")
+        self.duty_disp_var.set(f"{self.calc_duty:.1f} %")
+        self.period_var.set(f"{self.calc_period_ms:.2f} ms")
+
+        # อัปเดตกล่องรายละเอียดด้านล่าง
+        self.lbl_target_pos.config(text=f"{self.slider_pos:.1f} %")
+        self.lbl_target_freq.config(text=f"{self.calc_freq:.1f} Hz")
+        self.lbl_f_formula.config(text=f"500 + 7×({self.slider_pos:.1f}%)")
+
+        self.lbl_target_duty.config(text=f"{self.calc_duty:.1f} %")
+        self.lbl_d_formula.config(text=f"20 + 0.6×({self.slider_pos:.1f}%)")
+
+        self.lbl_target_period.config(text=f"{self.calc_period_ms:.2f} ms")
+        self.lbl_t_formula.config(text=f"1000 / {self.calc_freq:.1f} Hz")
+
+        self.lbl_hw_info.config(text=f"ARR: {self.calc_arr} | CCR: {self.calc_ccr}")
+
     def on_slider_move(self, val):
-        self.slider_pos = int(float(val))
-        # คำนวณตามสูตร Linear Mapping:
-        # Freq: 500 ถึง 1,200 Hz
-        self.target_freq = int(FREQ_MIN + (self.slider_pos / 100.0) * (FREQ_MAX - FREQ_MIN))
-        # Duty: 20% ถึง 80%
-        self.target_duty = int(round(DUTY_MIN + (self.slider_pos / 100.0) * (DUTY_MAX - DUTY_MIN)))
-
-        # อัปเดตตัวเลขแสดงผลบน UI
-        self.lbl_target_pos.config(text=f"{self.slider_pos} %")
-        self.lbl_target_freq.config(text=f"{self.target_freq:,} Hz")
-        self.lbl_target_duty.config(text=f"{self.target_duty} %")
-
-        # Debounce ส่งข้อมูล 50ms ป้องกันบัส Serial ล้น
+        self.update_all_calculations(val)
+        # Debounce ส่งคำสั่ง 50ms ป้องกันบัส Serial ล้น
         if self._after_id is not None:
             self.root.after_cancel(self._after_id)
         self._after_id = self.root.after(50, self.send_commands)
 
     def set_preset(self, pos):
         self.slider.set(pos)
-        self.on_slider_move(pos)
+        self.update_all_calculations(pos)
         self.send_commands()
 
     def stop_motor(self):
         # สั่งหยุดมอเตอร์ Duty = 0%
-        self.target_duty = 0
-        self.lbl_target_duty.config(text="0 % (STOP)")
+        self.calc_duty = 0.0
+        self.duty_disp_var.set("0.0 % (STOP)")
+        self.lbl_target_duty.config(text="0.0 % (STOP)")
         if self.ser and self.ser.is_open:
-            cmd = f"F:{self.target_freq}|D:0\n"
+            cmd = f"F:{int(round(self.calc_freq))}|D:0\n"
             try:
                 self.ser.write(cmd.encode("utf-8"))
                 self.log(f"PC -> MCU: {cmd.strip()} (EMERGENCY STOP)")
@@ -307,8 +362,10 @@ class SingleSliderDualControlApp:
 
     def send_commands(self):
         if self.ser and self.ser.is_open:
-            # คำสั่งคู่: "F:<freq>|D:<duty>\n" เช่น "F:850|D:50\n"
-            cmd = f"F:{self.target_freq}|D:{self.target_duty}\n"
+            # ส่งคำสั่งคู่ที่คำนวณสด: "F:<freq>|D:<duty>\n" เช่น "F:850|D:50\n"
+            send_f = int(round(self.calc_freq))
+            send_d = int(round(self.calc_duty))
+            cmd = f"F:{send_f}|D:{send_d}\n"
             try:
                 self.ser.write(cmd.encode("utf-8"))
                 self.log(f"PC -> MCU: {cmd.strip()}")
@@ -330,16 +387,22 @@ class SingleSliderDualControlApp:
         try:
             if "|" in line:
                 parts = line.split("|")
+                rec_freq = None
+                rec_duty = None
+
                 for p in parts:
                     p = p.strip()
                     if p.startswith("F:"):
-                        self.freq_var.set(f"{p[2:]} Hz")
+                        rec_freq = float(p[2:])
+                        self.freq_var.set(f"{rec_freq:.1f} Hz")
                     elif p.startswith("D:"):
-                        self.duty_disp_var.set(f"{p[2:]} %")
+                        rec_duty = float(p[2:])
+                        self.duty_disp_var.set(f"{rec_duty:.1f} %")
                     elif p.startswith("T:"):
-                        self.period_var.set(f"{p[2:]} ms")
+                        # ถ้ามีส่งค่า T มา ก็แสดง แต่ถ้ามี rec_freq จะคำนวณ T = 1000/f ซ้ำเพื่อความแม่นยำ
+                        pass
                     elif p.startswith("RPM:"):
-                        self.rpm_var.set(f"{p[4:]} RPM")
+                        self.rpm_var.set(f"{float(p[4:]):.1f} RPM")
                     elif p.startswith("DIR:"):
                         dir_str = p[4:].strip()
                         self.dir_var.set(dir_str)
@@ -349,6 +412,11 @@ class SingleSliderDualControlApp:
                             self.lbl_dir.config(fg="#58A6FF", text="CCW ↺")
                         else:
                             self.lbl_dir.config(fg="#8B949E", text="STOP")
+
+                # คำนวณ Period สดจากความถี่ที่บอร์ดส่งกลับมา T = 1000.0 / F (ไม่มีการ Fix)
+                if rec_freq and rec_freq > 0:
+                    dyn_period = 1000.0 / rec_freq
+                    self.period_var.set(f"{dyn_period:.2f} ms")
         except Exception:
             pass
 

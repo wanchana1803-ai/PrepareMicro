@@ -276,16 +276,18 @@ char tx_buf[80];
     }
 
     // -------------------------------------------------------------------------
-    // 2. คำนวณ RPM + ทิศทางการหมุนจริง และส่ง Telemetry ทุก 100 ms
+    // 2. คำนวณ RPM + ทิศทาง และคำนวณ Freq/Period/Duty จริงจาก Hardware Registers ทุก 100 ms
     // -------------------------------------------------------------------------
     if (HAL_GetTick() - last_calc_time >= SAMPLING_TIME_MS)
     {
         last_calc_time = HAL_GetTick();
 
+        // ก) อ่านค่า Counter จาก Encoder และหา Delta
         current_count = __HAL_TIM_GET_COUNTER(&htim5);
         diff_count = (int32_t)(current_count - prev_count);
         prev_count = current_count;
 
+        // ข) ตรวจวัดทิศทางการหมุนจริง
         if (diff_count > 0)
         {
             strcpy(dir_str, "CW");
@@ -299,12 +301,25 @@ char tx_buf[80];
             strcpy(dir_str, "STOP");
         }
 
+        // ค) คำนวณ RPM: (|diff_count| * 60) / (CPR * delta_t)
         rpm = ((float)abs(diff_count) * 60.0f) / ((4.0f * ENCODER_PPR) * (SAMPLING_TIME_MS / 1000.0f));
-        period_ms = 1000.0f / (float)freq_hz;
 
-        // รูปแบบ Telemetry: "F:2000|D:50|T:0.50|RPM:280.5|DIR:CW\r\n"
-        sprintf(tx_buf, "F:%lu|D:%u|T:%.2f|RPM:%.1f|DIR:%s\r\n",
-                freq_hz, target_duty, period_ms, rpm, dir_str);
+        // ง) คำนวณ Frequency, Period, และ Duty Cycle แบบ Dynamic จาก Register ฮาร์ดแวร์จริง (ไม่ใช่การ Fix ค่า):
+        uint32_t current_arr = __HAL_TIM_GET_AUTORELOAD(&htim1);
+        uint32_t current_ccr = __HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_1);
+
+        // 1. ความถี่จริง (Hz) = Timer Clock / (ARR + 1)
+        freq_hz = 1000000UL / (current_arr + 1);
+
+        // 2. คาบเวลาจริง (ms) = (ARR + 1) / 1000.0
+        period_ms = ((float)(current_arr + 1)) / 1000.0f;
+
+        // 3. Duty Cycle จริง (%) = (CCR1 * 100) / (ARR + 1)
+        float actual_duty_pct = ((float)current_ccr * 100.0f) / (float)(current_arr + 1);
+
+        // จ) ส่ง Telemetry รูปแบบมาตรฐาน: "F:850|D:50.0|T:1.18|RPM:280.5|DIR:CW\r\n"
+        sprintf(tx_buf, "F:%lu|D:%.1f|T:%.2f|RPM:%.1f|DIR:%s\r\n",
+                freq_hz, actual_duty_pct, period_ms, rpm, dir_str);
         HAL_UART_Transmit(&huart2, (uint8_t*)tx_buf, strlen(tx_buf), 50);
     }
     /* USER CODE END 3 */

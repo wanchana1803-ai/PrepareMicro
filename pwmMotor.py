@@ -230,11 +230,13 @@ class PWMMotorApp:
         self.send_pwm(duty)
 
     def on_slider_move(self, val):
-        duty = int(float(val))
-        self.lbl_slider_num.config(text=f"{duty} %")
+        duty = float(val)
+        self.lbl_slider_num.config(text=f"{int(duty)} %")
+        # อัปเดตแสดงผลสดจากการคำนวณ (ไม่มีการ Fix ค่า)
+        self.duty_disp_var.set(f"{duty:.1f} %")
         if self._after_id is not None:
             self.root.after_cancel(self._after_id)
-        self._after_id = self.root.after(50, lambda: self.send_pwm(duty))
+        self._after_id = self.root.after(50, lambda: self.send_pwm(int(duty)))
 
     def send_pwm(self, duty):
         if self.ser and self.ser.is_open:
@@ -263,16 +265,16 @@ class PWMMotorApp:
         try:
             if "|" in line:
                 parts = line.split("|")
+                rec_freq = None
                 for p in parts:
                     p = p.strip()
                     if p.startswith("F:"):
-                        self.freq_var.set(f"{p[2:]} Hz")
+                        rec_freq = float(p[2:])
+                        self.freq_var.set(f"{rec_freq:.1f} Hz")
                     elif p.startswith("D:"):
-                        self.duty_disp_var.set(f"{p[2:]} %")
-                    elif p.startswith("T:"):
-                        self.period_var.set(f"{p[2:]} ms")
+                        self.duty_disp_var.set(f"{float(p[2:]):.1f} %")
                     elif p.startswith("RPM:"):
-                        self.rpm_var.set(f"{p[4:]} RPM")
+                        self.rpm_var.set(f"{float(p[4:]):.1f} RPM")
                     elif p.startswith("DIR:"):
                         dir_str = p[4:].strip()
                         self.dir_var.set(dir_str)
@@ -282,6 +284,11 @@ class PWMMotorApp:
                             self.lbl_dir.config(fg="#58A6FF", text="CCW ↺")
                         else:
                             self.lbl_dir.config(fg="#8B949E", text="STOP")
+
+                # คำนวณ Period สดจากความถี่ T = 1000 / F (Dynamic Calculation)
+                if rec_freq and rec_freq > 0:
+                    dyn_period = 1000.0 / rec_freq
+                    self.period_var.set(f"{dyn_period:.2f} ms")
         except Exception:
             pass
 
