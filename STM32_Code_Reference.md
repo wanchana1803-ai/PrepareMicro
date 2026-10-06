@@ -58,12 +58,13 @@ uint32_t pwm_val = 0;             // Compare Register (CCR1)
 uint32_t freq_hz = 1000;          // ความถี่ PWM (1,000 Hz)
 float period_ms = 1.00f;          // คาบเวลา PWM (1.00 ms)
 
-// --- ตัวแปรสื่อสาร UART ---
+// --- ตัวแปรสื่อสาร UART และจอ OLED ---
 uint8_t rx_byte;
 char rx_buf[32];
 uint8_t rx_idx = 0;
 uint32_t last_calc_time = 0;
 char tx_buf[80];
+char oled_buf[32];                // บัฟเฟอร์ข้อความสำหรับจอ OLED
 /* USER CODE END PV */
 ```
 
@@ -80,6 +81,13 @@ char tx_buf[80];
 
   // 3. สั่งเริ่มตัวนับ Encoder (htim5)
   HAL_TIM_Encoder_Start(&htim5, TIM_CHANNEL_ALL);
+
+  // 4. เริ่มต้นหน้าจอ OLED I2C (SSD1306 / SH1106)
+  ssd1306_Init();
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(10, 20);
+  ssd1306_WriteString("OLED READY", Font_7x10, White);
+  ssd1306_UpdateScreen();
   /* USER CODE END 2 */
 ```
 
@@ -182,6 +190,39 @@ char tx_buf[80];
         sprintf(tx_buf, "F:%lu|D:%.1f|T:%.2f|RPM:%.1f|DIR:%s\r\n",
                 freq_hz, actual_duty_pct, period_ms, rpm, dir_str);
         HAL_UART_Transmit(&huart2, (uint8_t*)tx_buf, strlen(tx_buf), 50);
+
+        // ช) แสดงผลสดบนจอ OLED (SSD1306 / SH1106)
+        ssd1306_Fill(Black);
+
+        // แถว 1: ความถี่ และ Duty Cycle
+        sprintf(oled_buf, "F:%4luHz D:%3.0f%%", freq_hz, actual_duty_pct);
+        ssd1306_SetCursor(2, 2);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 2: คาบเวลา และ ทิศทางการหมุนจริง
+        sprintf(oled_buf, "T:%4.2fms DIR:%-4s", period_ms, dir_str);
+        ssd1306_SetCursor(2, 14);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 3: ความเร็วรอบ Encoder RPM
+        sprintf(oled_buf, "RPM: %6.1f", rpm);
+        ssd1306_SetCursor(2, 26);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 4: ค่า Timer Hardware Registers
+        sprintf(oled_buf, "ARR:%-4lu CCR:%-4lu", current_arr, current_ccr);
+        ssd1306_SetCursor(2, 38);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 5: กราฟิก Duty Cycle Progress Bar (0 - 100%)
+        ssd1306_DrawRectangle(2, 52, 124, 9, White);
+        uint8_t bar_w = (uint8_t)(((uint32_t)actual_duty_pct * 120) / 100);
+        if (bar_w > 120) bar_w = 120;
+        for (uint8_t y = 54; y <= 58; y++) {
+            ssd1306_DrawLine(4, y, 4 + bar_w, y, White);
+        }
+
+        ssd1306_UpdateScreen();
     }
     /* USER CODE END 3 */
   }
@@ -331,6 +372,39 @@ char tx_buf[80];
         sprintf(tx_buf, "F:%lu|D:%.1f|T:%.2f|RPM:%.1f|DIR:%s\r\n",
                 freq_hz, actual_duty_pct, period_ms, rpm, dir_str);
         HAL_UART_Transmit(&huart2, (uint8_t*)tx_buf, strlen(tx_buf), 50);
+
+        // ฉ) แสดงผลสดบนจอ OLED (SSD1306 / SH1106)
+        ssd1306_Fill(Black);
+
+        // แถว 1: ความถี่ (500 - 1200 Hz) และ Duty Cycle (20 - 80%)
+        sprintf(oled_buf, "F:%4luHz D:%3.0f%%", freq_hz, actual_duty_pct);
+        ssd1306_SetCursor(2, 2);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 2: คาบเวลา (ms) และ ทิศทางการหมุนจริง
+        sprintf(oled_buf, "T:%4.2fms DIR:%-4s", period_ms, dir_str);
+        ssd1306_SetCursor(2, 14);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 3: ความเร็วรอบ Encoder RPM
+        sprintf(oled_buf, "RPM: %6.1f", rpm);
+        ssd1306_SetCursor(2, 26);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 4: ค่า Timer Hardware Registers (ARR & CCR1)
+        sprintf(oled_buf, "ARR:%-4lu CCR:%-4lu", current_arr, current_ccr);
+        ssd1306_SetCursor(2, 38);
+        ssd1306_WriteString(oled_buf, Font_7x10, White);
+
+        // แถว 5: กราฟิก Duty Cycle Progress Bar (สเกล 20% - 80%)
+        ssd1306_DrawRectangle(2, 52, 124, 9, White);
+        uint8_t bar_w = (uint8_t)(((uint32_t)actual_duty_pct * 120) / 100);
+        if (bar_w > 120) bar_w = 120;
+        for (uint8_t y = 54; y <= 58; y++) {
+            ssd1306_DrawLine(4, y, 4 + bar_w, y, White);
+        }
+
+        ssd1306_UpdateScreen();
     }
     /* USER CODE END 3 */
   }
