@@ -144,8 +144,7 @@ class SingleSliderDualControlApp:
         self.card_duty = self.create_metric_card(cards_box, "Duty Cycle", self.duty_disp_var, "D = 20 + 0.6×Slider", "#3FB950", 0, 1)
         self.card_period = self.create_metric_card(cards_box, "PWM Period", self.period_var, "T = 1000 / f", "#D29922", 0, 2)
 
-        # แถว 2: RPM และ ทิศทางการหมุนจริง
-        self.card_rpm = self.create_metric_card(cards_box, "Encoder Speed", self.rpm_var, "RPM = (|Δcnt|×60)/(CPR×Δt)", "#A371F7", 1, 0, colspan=2)
+        self.card_rpm = self.create_metric_card(cards_box, "Motor Speed (RPM)", self.rpm_var, "RPM = (Duty% × 1500) / 100", "#A371F7", 1, 0, colspan=2)
 
         # การ์ด Direction
         card_dir = tk.Frame(cards_box, bg=self.CARD_BG, bd=1, relief="ridge", padx=12, pady=6)
@@ -322,6 +321,16 @@ class SingleSliderDualControlApp:
         self.duty_disp_var.set(f"{self.calc_duty:.1f} %")
         self.period_var.set(f"{self.calc_period_ms:.2f} ms")
 
+        # 4. คำนวณ RPM สดอิงจากความเร็วสูงสุดมอเตอร์ 1500 RPM (วิ่งตาม Slider ทันที)
+        self.calc_rpm = (self.calc_duty * 1500.0) / 100.0
+        self.rpm_var.set(f"{self.calc_rpm:.1f} RPM")
+        if self.calc_duty > 0:
+            self.dir_var.set("CW")
+            self.lbl_dir.config(fg="#3FB950", text="CW ↻")
+        else:
+            self.dir_var.set("STOP")
+            self.lbl_dir.config(fg="#8B949E", text="STOP")
+
         # อัปเดตกล่องรายละเอียดด้านล่าง
         self.lbl_target_pos.config(text=f"{self.slider_pos:.1f} %")
         self.lbl_target_freq.config(text=f"{self.calc_freq:.1f} Hz")
@@ -350,8 +359,12 @@ class SingleSliderDualControlApp:
     def stop_motor(self):
         # สั่งหยุดมอเตอร์ Duty = 0%
         self.calc_duty = 0.0
+        self.calc_rpm = 0.0
         self.duty_disp_var.set("0.0 % (STOP)")
         self.lbl_target_duty.config(text="0.0 % (STOP)")
+        self.rpm_var.set("0.0 RPM")
+        self.dir_var.set("STOP")
+        self.lbl_dir.config(fg="#8B949E", text="STOP")
         if self.ser and self.ser.is_open:
             cmd = f"F:{int(round(self.calc_freq))}|D:0\n"
             try:

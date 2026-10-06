@@ -136,8 +136,7 @@ class PWMMotorApp:
         self.create_metric_card(cards_box, "Duty Cycle", self.duty_disp_var, "D = (CCR1 / 1000) × 100", "#3FB950", 0, 1)
         self.create_metric_card(cards_box, "PWM Period", self.period_var, "T = 1000 / f", "#D29922", 0, 2)
 
-        # แถวที่ 2: Encoder Telemetry (RPM และ Measured Direction)
-        self.create_metric_card(cards_box, "Encoder Speed", self.rpm_var, "RPM = (|Δcnt|×60)/(CPR×Δt)", "#A371F7", 1, 0, colspan=2)
+        self.create_metric_card(cards_box, "Motor Speed (RPM)", self.rpm_var, "RPM = (Duty% × 1500) / 100", "#A371F7", 1, 0, colspan=2)
 
         card_dir = tk.Frame(cards_box, bg=self.CARD_BG, bd=1, relief="ridge", padx=12, pady=6)
         card_dir.grid(row=1, column=2, padx=4, pady=4, sticky="nsew")
@@ -254,10 +253,20 @@ class PWMMotorApp:
         self.log("System : Disconnected")
 
     def update_calculations(self, val):
-        """ คำนวณค่า Duty, Ton และ CCR แบบ Dynamic 100% """
+        """ คำนวณค่า Duty, Ton, CCR และ RPM (ฐาน 1500 RPM) แบบ Dynamic 100% """
         self.current_duty = float(val)
         self.calc_ccr = int(round((self.current_duty / 100.0) * (FIXED_ARR + 1)))
         self.calc_ton = (self.current_duty * self.calc_period) / 100.0
+
+        # คำนวณ RPM สดอิงจากความเร็วสูงสุดมอเตอร์ 1500 RPM (วิ่งตาม Slider ทันที)
+        self.calc_rpm = (self.current_duty * 1500.0) / 100.0
+        self.rpm_var.set(f"{self.calc_rpm:.1f} RPM")
+        if self.current_duty > 0:
+            self.dir_var.set("CW")
+            self.lbl_dir.config(fg="#3FB950", text="CW ↻")
+        else:
+            self.dir_var.set("STOP")
+            self.lbl_dir.config(fg="#8B949E", text="STOP")
 
         # อัปเดตแสดงผลสด
         self.duty_disp_var.set(f"{self.current_duty:.1f} %")

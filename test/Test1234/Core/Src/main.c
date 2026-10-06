@@ -21,9 +21,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 #include "ssd1306.h"
 #include "fonts.h"
-#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,33 +49,86 @@ ADC_HandleTypeDef hadc1;
 I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim5;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint16_t adc_val = 0;   // ค่า ADC (0 - 4095)
-uint16_t pwm_val = 0;   // ค่าความสว่าง PWM (0 - 999)
-uint32_t last_time = 0; // ตัวแปรจับเวลา
+#define MOTOR_MAX_RPM     1500
+#define ENCODER_PPR       100
+// --- ตัวแปร PWM & ADC ---
+uint32_t adc_val = 0;
+uint32_t freq_hz = 500;
+uint16_t duty_val = 20;
+uint32_t arr_val = 1999;
+uint32_t ccr_val = 400;
+float period_ms = 2.00f;
+float rpm_disp = 300.0f;
+uint8_t vr_pct = 0;
+// --- ตัวแปร Encoder & ทิศทางหมุน (CW / CCW / STOP) ---
+uint32_t current_count = 0;
+uint32_t prev_count = 0;
+int32_t diff_count = 0;
+char dir_str[6] = "CW";      // แสดง CW, CCW, หรือ STOP
+// --- ตัวจับเวลา ---
+uint32_t last_adc_tick = 0;
+uint32_t last_enc_tick = 0;
+uint32_t last_oled_tick = 0;
+char disp_str[32];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_ADC1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM5_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#include <stdio.h>
-int __io_putchar(int ch)
+uint32_t Read_ADC_Filtered(void)
 {
-    ITM_SendChar(ch); //  แบบใหม่ (SWV)
-    return ch;
+    uint32_t sum = 0;
+    for (int i = 0; i < 8; i++) // สุ่มอ่าน 8 ครั้งหาค่าเฉลี่ย
+    {
+        HAL_ADC_Start(&hadc1);
+        if (HAL_ADC_PollForConversion(&hadc1, 5) == HAL_OK)
+        {
+            sum += HAL_ADC_GetValue(&hadc1); // อ่านค่าจาก PA4 (Channel 4)
+        }
+        HAL_ADC_Stop(&hadc1);
+    }
+    return sum / 8; // ได้ค่า adc_val ช่วง 0 - 4095
+}
+// ระบบ I2C Auto-Recovery ป้องกันจอค้างจากสัญญาณรบกวนของมอเตอร์
+void OLED_CheckAndRecoverI2C(void)
+{
+    if (hi2c1.State != HAL_I2C_STATE_READY || hi2c1.ErrorCode != HAL_I2C_ERROR_NONE)
+    {
+        __HAL_RCC_I2C1_FORCE_RESET();
+        HAL_Delay(2);
+        __HAL_RCC_I2C1_RELEASE_RESET();
+        HAL_I2C_Init(&hi2c1);
+    }
+}
+// ฟังก์ชันวาดแถบ Progress Bar
+void OLED_DrawBar(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t pct)
+{
+    if (pct > 100) pct = 100;
+    ssd1306_DrawRectangle(x, y, w, h, White);
+    uint8_t fill_w = (uint8_t)(((uint16_t)(w - 4) * pct) / 100);
+    for (uint8_t i = 2; i < h - 2; i++)
+    {
+        if (fill_w > 0)
+        {
+            ssd1306_DrawLine(x + 2, y + i, x + 2 + fill_w, y + i, White);
+        }
+    }
 }
 /* USER CODE END 0 */
 
@@ -106,72 +161,125 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_ADC1_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_I2C1_Init();
+  MX_TIM5_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  ssd1306_Init(); // เปิดจอ OLED
-  /* USER CODE END 2 */
-
+   // 1. ตั้งค่า Timer Preload
+  // 1. ตั้งค่า Timer Preload
+    __HAL_TIM_ENABLE_OCxPRELOAD(&htim1, TIM_CHANNEL_1);
+    htim1.Instance->CR1 |= TIM_CR1_ARPE;
+    // 2. เริ่มต้น PWM
+    __HAL_TIM_SET_AUTORELOAD(&htim1, 1999);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 400);
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+    // 3. เริ่มต้นตัวนับ Encoder (htim5 ขา PA0/PA1) 👈 เพิ่มบรรทัดนี้
+    HAL_TIM_Encoder_Start(&htim5, TIM_CHANNEL_ALL);
+    // 4. เริ่มต้นหน้าจอ OLED
+    HAL_Delay(100);
+    ssd1306_Init();
+    ssd1306_Fill(Black);
+    ssd1306_SetCursor(10, 20);
+    ssd1306_WriteString("OLED SYSTEM OK", Font_7x10, White);
+    ssd1306_SetCursor(10, 36);
+    ssd1306_WriteString("We are love WRA.", Font_7x10, White);
+    ssd1306_UpdateScreen();
+    HAL_Delay(500);
+   /* USER CODE END 2 */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+      while (1)
+      {
     /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
-	  if (HAL_GetTick() - last_time >= 50) // อัปเดตทุกๆ 50 ms (ลื่นไหล ไม่กระตุก)
-	   {
-	       last_time = HAL_GetTick();
-
-	       // 1. อ่านค่า ADC จากตัวต้านทานปรับค่าได้
-	       HAL_ADC_Start(&hadc1);
-	       if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
-	       {
-	           adc_val = HAL_ADC_GetValue(&hadc1); // อ่านค่า 0 - 4095
-	       }
-	       HAL_ADC_Stop(&hadc1);
-
-	       // 2. คำนวณเป็น Duty Cycle 200 - 800 (20.0% - 80.0%)
-	       pwm_val = 200 + (uint32_t)adc_val * 600 / 4095;
-
-	       // 3. สั่งจ่ายค่า Duty Cycle ให้หลอดไฟ LED (ขา PA8)
-	       __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, pwm_val);
-
-	       // 4. ปริ้นท์ดูค่า
-	       printf("ADC: %4d | PWM: %4d | Duty: %d.%d%%\r\n",
-	              adc_val, pwm_val, pwm_val / 10, pwm_val % 10);
-
-	       // 5. แสดงผลบนจอ OLED
-	       char str[20];
-	       ssd1306_Fill(Black); // ล้างจอเดิม
-
-	       // บรรทัดที่ 1: หัวข้อ
-	       ssd1306_SetCursor(0, 0);
-	       ssd1306_WriteString("PWM CONTROLLER", Font_7x10, White);
-
-	       // บรรทัดที่ 2: แสดงค่า Duty Cycle ตัวใหญ่ (Font 11x18)
-	       sprintf(str, "Duty: %2d.%1d%%", pwm_val / 10, pwm_val % 10);
-	       ssd1306_SetCursor(0, 16);
-	       ssd1306_WriteString(str, Font_11x18, White);
-
-	       // บรรทัดที่ 3: แสดงค่า ADC และค่า PWM (CCR)
-	       sprintf(str, "ADC:%4d PWM:%3d", adc_val, pwm_val);
-	       ssd1306_SetCursor(0, 40);
-	       ssd1306_WriteString(str, Font_7x10, White);
-
-	       // บรรทัดที่ 4: แสดงความถี่คงที่
-	       ssd1306_SetCursor(0, 52);
-	       ssd1306_WriteString("Freq: 1000 Hz", Font_7x10, White);
-
-	       // ส่งภาพขึ้นจอจริง
-	       ssd1306_UpdateScreen();
-	   }
-
-  }
-  /* USER CODE END 3 */
+    	  /* USER CODE BEGIN 3 */
+    	     // -------------------------------------------------------------------------
+    	     // 1. อ่านค่า ADC (PA4 / A2) และคำนวณ Freq + Duty ทุก 30 ms
+    	     // -------------------------------------------------------------------------
+    	     if (HAL_GetTick() - last_adc_tick >= 30)
+    	     {
+    	         last_adc_tick = HAL_GetTick();
+    	         adc_val = Read_ADC_Filtered();
+    	         vr_pct = (uint8_t)(((uint32_t)adc_val * 100) / 4095);
+    	         if (vr_pct > 100) vr_pct = 100;
+    	         freq_hz = 500 + (((uint32_t)adc_val * 700) / 4095);
+    	         duty_val = 20 + (uint16_t)(((uint32_t)adc_val * 60) / 4095);
+    	         if (duty_val > 80) duty_val = 80;
+    	         arr_val = (1000000UL / freq_hz) - 1;
+    	         ccr_val = ((arr_val + 1) * (uint32_t)duty_val) / 100;
+    	         __HAL_TIM_SET_AUTORELOAD(&htim1, arr_val);
+    	         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_val);
+    	         period_ms = 1000.0f / (float)freq_hz;
+    	     }
+    	     // -------------------------------------------------------------------------
+    	     // 2. คำนวณความเร็วรอบ (RPM) และทิศทางหมุน (CW / CCW) ทุก 100 ms 👈 เพิ่มส่วนนี้
+    	     // -------------------------------------------------------------------------
+    	     if (HAL_GetTick() - last_enc_tick >= 100)
+    	     {
+    	         uint32_t dt = HAL_GetTick() - last_enc_tick;
+    	         last_enc_tick = HAL_GetTick();
+    	         current_count = __HAL_TIM_GET_COUNTER(&htim5);
+    	         diff_count = (int32_t)(current_count - prev_count);
+    	         prev_count = current_count;
+    	         // มีสัญญาณหมุนจาก Encoder จริง (กรองสัญญาณรบกวน threshold > 5)
+    	         if (abs(diff_count) > 5)
+    	         {
+    	             if (diff_count > 0) strcpy(dir_str, "CW");
+    	             else strcpy(dir_str, "CCW");
+    	             rpm_disp = ((float)abs(diff_count) * 60000.0f) / ((4.0f * ENCODER_PPR) * (float)dt);
+    	         }
+    	         else
+    	         {
+    	             // คำนวณจาก Duty Cycle (ฐาน 1500 RPM)
+    	             if (duty_val > 0)
+    	             {
+    	                 strcpy(dir_str, "CW");
+    	                 rpm_disp = ((float)duty_val * (float)MOTOR_MAX_RPM) / 100.0f;
+    	             }
+    	             else
+    	             {
+    	                 strcpy(dir_str, "STOP");
+    	                 rpm_disp = 0.0f;
+    	             }
+    	         }
+    	     }
+    	     // -------------------------------------------------------------------------
+    	     // 3. รีเฟรชหน้าจอ OLED ทุก 150 ms
+    	     // -------------------------------------------------------------------------
+    	     if (HAL_GetTick() - last_oled_tick >= 150)
+    	     {
+    	         last_oled_tick = HAL_GetTick();
+    	         OLED_CheckAndRecoverI2C();
+    	         ssd1306_Fill(Black);
+    	         // บรรทัดที่ 1: Header
+    	         ssd1306_SetCursor(10, 0);
+    	         ssd1306_WriteString("We are love WRA.", Font_7x10, White);
+    	         // บรรทัดที่ 2: ความถี่ & คาบเวลา
+    	         uint32_t p_int = (uint32_t)period_ms;
+    	         uint32_t p_dec = (uint32_t)((period_ms - (float)p_int) * 100.0f);
+    	         sprintf(disp_str, "F:%4luHz T:%lu.%02lums", freq_hz, p_int, p_dec);
+    	         ssd1306_SetCursor(2, 12);
+    	         ssd1306_WriteString(disp_str, Font_7x10, White);
+    	         // บรรทัดที่ 3: Duty Cycle (20 - 80%)
+    	         sprintf(disp_str, "Duty : %2u %%", duty_val);
+    	         ssd1306_SetCursor(2, 24);
+    	         ssd1306_WriteString(disp_str, Font_7x10, White);
+    	         // บรรทัดที่ 4: ความเร็วรอบ RPM พร้อมทิศทาง [CW] / [CCW] 👈 บรรทัดนี้จะแสดง CW/CCW
+    	         sprintf(disp_str, "RPM  : %4u [%s]", (uint16_t)rpm_disp, dir_str);
+    	         ssd1306_SetCursor(2, 36);
+    	         ssd1306_WriteString(disp_str, Font_7x10, White);
+    	         // บรรทัดที่ 5: ค่า Timer Register จริง
+    	         sprintf(disp_str, "ARR:%4lu CCR:%4lu", arr_val, ccr_val);
+    	         ssd1306_SetCursor(2, 48);
+    	         ssd1306_WriteString(disp_str, Font_7x10, White);
+    	         // บรรทัดที่ 6: แถบ Progress Bar (0 - 100%)
+    	         OLED_DrawBar(2, 58, 124, 6, vr_pct);
+    	         ssd1306_UpdateScreen();
+    	     }
+    	     /* USER CODE END 3 */
+      }
 }
 
 /**
@@ -260,7 +368,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -289,7 +397,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.ClockSpeed = 100000;
   hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
@@ -369,6 +477,55 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 2 */
   HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+
+  /* USER CODE BEGIN TIM5_Init 0 */
+
+  /* USER CODE END TIM5_Init 0 */
+
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM5_Init 1 */
+
+  /* USER CODE END TIM5_Init 1 */
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 0;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 4294967295;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 0;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_RISING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 0;
+  if (HAL_TIM_Encoder_Init(&htim5, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM5_Init 2 */
+
+  /* USER CODE END TIM5_Init 2 */
 
 }
 

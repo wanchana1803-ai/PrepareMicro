@@ -13,3 +13,8 @@ Release/
 # IDE files
 .metadata/
 .settings/
+
+# Python cache
+__pycache__/
+*.pyc
+
